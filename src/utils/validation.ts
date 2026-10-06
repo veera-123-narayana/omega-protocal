@@ -126,6 +126,10 @@ export const CANONICAL_SECTOR_TOKENS: Record<string, string[]> = {
     'DSA-MATRIX-12',
   ],
   '13': [
+    'sctf{forgotten_archive_lsb}',
+    'forgotten_archive_lsb',
+    'forgotten-archive-lsb',
+    'sctf_forgotten_archive_lsb',
     '4g3nt_chaos_purified_v3rifi3d',
     'agent_chaos_purified_verified',
     '4g3nt_chaos',
@@ -133,6 +137,13 @@ export const CANONICAL_SECTOR_TOKENS: Record<string, string[]> = {
     'VERIFIER-RAG-01',
   ],
   '14': [
+    'sctf{forgotten_archive_lsb}',
+    'forgotten_archive_lsb',
+    'sctf{f4hhh_th3_thr33_l00p_m3m3_st3g0}',
+    'f4hhh_th3_thr33_l00p_m3m3_st3g0',
+    'sctf{f4hhh_3nc0d1ng_tr41l_unl0ck3d}',
+    'f4hhh_3nc0d1ng_tr41l_unl0ck3d',
+    'sctf_f4hhh_th3_thr33_l00p_m3m3_st3g0',
     'synthetic_reality_glitch_exposed',
     'reality_glitch_exposed',
     'synthetic_reality_glitch',
@@ -265,9 +276,12 @@ export async function validateSectorFlag(
     const inputLower = clean.toLowerCase();
     const expectedLower = expectedMasterFlag.toLowerCase();
 
-    // Check direct match or canonical variants (e.g. level 13 '4' vs 'a', level 8 'c' vs 'p')
+    // Check direct match or canonical variants (e.g. level 13 's' vs '4' vs 'a', level 14 's', level 8 'c' vs 'p')
     const isDirectMatch = inputLower === expectedLower;
     const isCanonicalMatch =
+      inputLower === 'dvpsmwscmip4ss' ||
+      inputLower === 'dvpsmwscmipsss' ||
+      inputLower === 'dvpsmwscmipsas' ||
       inputLower === 'dvpsmwscmip4as' ||
       inputLower === 'dvpsmwscmipaas' ||
       inputLower === 'dvpsmwspmip4as';

@@ -86,7 +86,10 @@ export type SectorCategory =
   | 'DSA / Algorithms'
   | 'AI Agents'
   | 'Multimodal AI / Verification'
+  | 'Steganography / Multi-Stage Encoding'
   | 'Final Combined CTF';
+
+export type Sector = SectorDefinition;
 
 export type AiPolicy = 'ALLOWED' | 'DISCOURAGED' | 'AI-FREE' | 'REQUIRED';
 

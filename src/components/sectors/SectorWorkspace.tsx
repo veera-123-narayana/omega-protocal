@@ -16,7 +16,9 @@ import {
   AfterIendChallenge,
   PacketHuntChallenge,
   BossFightAlgorithmChallenge,
+  ForgottenArchiveChallenge,
   AgentChaosChallenge,
+  FahhThreeLoopChallenge,
   RealityGlitchChallenge,
   OmegaCoreChallenge,
 } from './InteractiveChallenges';
@@ -133,9 +135,9 @@ export const SectorWorkspace: React.FC<SectorWorkspaceProps> = ({
       case '12':
         return <BossFightAlgorithmChallenge sector={sector} teamState={teamState} />;
       case '13':
-        return <AgentChaosChallenge sector={sector} teamState={teamState} />;
+        return <ForgottenArchiveChallenge sector={sector} teamState={teamState} />;
       case '14':
-        return <RealityGlitchChallenge sector={sector} teamState={teamState} />;
+        return <FahhThreeLoopChallenge sector={sector} teamState={teamState} />;
       case '15':
         return <OmegaCoreChallenge sector={sector} teamState={teamState} />;
       default:
