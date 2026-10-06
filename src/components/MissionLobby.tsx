@@ -111,9 +111,9 @@ export const MissionLobby: React.FC<MissionLobbyProps> = ({ teamState, currentRo
             )}
 
             <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-900 border border-slate-800 rounded">
-              <Radio className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
-              <span className="text-xs font-mono text-emerald-400 font-medium">
-                2 / 2 CONNECTED
+              <Radio className={`w-3.5 h-3.5 ${teamState.secondOperative?.isOnline ? 'text-emerald-400 animate-pulse' : 'text-amber-400'}`} />
+              <span className={`text-xs font-mono font-medium ${teamState.secondOperative?.isOnline ? 'text-emerald-400' : 'text-amber-400'}`}>
+                {teamState.secondOperative?.isOnline ? '2 / 2 CONNECTED' : '1 / 2 CONNECTED'}
               </span>
             </div>
           </div>
@@ -123,7 +123,9 @@ export const MissionLobby: React.FC<MissionLobbyProps> = ({ teamState, currentRo
         <div className="grid grid-cols-3 gap-3 my-6 text-center">
           <div className="p-3 bg-slate-900/60 border border-slate-800/80 rounded">
             <div className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">DURATION</div>
-            <div className="text-base sm:text-lg font-orbitron font-bold text-cyan-300 mt-1">105 MIN</div>
+            <div className="text-base sm:text-lg font-orbitron font-bold text-cyan-300 mt-1">
+              {teamState.missionDurationMinutes} MIN
+            </div>
           </div>
           <div className="p-3 bg-slate-900/60 border border-slate-800/80 rounded">
             <div className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">SECTORS</div>
@@ -150,7 +152,7 @@ export const MissionLobby: React.FC<MissionLobbyProps> = ({ teamState, currentRo
                   OPERATIVE A {currentRole === 'OPERATIVE_A' && <span className="text-cyan-400 font-bold">(YOU)</span>}
                 </div>
                 <div className="font-orbitron font-semibold text-white">
-                  {teamState.leader.username}
+                  {teamState.leader.username || 'LEADER'}
                 </div>
               </div>
             </div>
@@ -179,7 +181,7 @@ export const MissionLobby: React.FC<MissionLobbyProps> = ({ teamState, currentRo
                   OPERATIVE B {currentRole === 'OPERATIVE_B' && <span className="text-cyan-400 font-bold">(YOU)</span>}
                 </div>
                 <div className="font-orbitron font-semibold text-white">
-                  {teamState.secondOperative?.username || 'NOVA_PRIME'}
+                  {teamState.secondOperative?.username || 'AWAITING OPERATIVE 2'}
                 </div>
               </div>
             </div>

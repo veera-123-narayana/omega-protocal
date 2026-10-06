@@ -21,7 +21,6 @@ import { AdminControlCenter } from './components/AdminControlCenter';
 import { VictoryModal } from './components/VictoryModal';
 import { TeamChatBox } from './components/TeamChatBox';
 import { initAntiInspectSecurity, registerSecurityWarningCallback } from './utils/antiInspect';
-import { syncTeamMemberToFirebase } from './services/firebaseService';
 
 import { QrCode, Sparkles, AlertCircle, Compass, ShieldAlert } from 'lucide-react';
 
@@ -42,10 +41,12 @@ export default function App() {
     });
   }, []);
 
-  // Sync team state to Firebase in background if configured
+  // Ensure Team Creation / Join modal is shown if no squad is configured yet
   useEffect(() => {
-    syncTeamMemberToFirebase(teamState);
-  }, [teamState.score, teamState.completedSectors.length, teamState.status]);
+    if (!teamState.teamId) {
+      setShowAuthModal(true);
+    }
+  }, [teamState.teamId]);
 
   // Navigation and UI state - Starting animation plays on launch
   const [hasSeenCinematic, setHasSeenCinematic] = useState<boolean>(false);
@@ -88,8 +89,8 @@ export default function App() {
   const handleCinematicComplete = () => {
     sessionStorage.setItem('seen_cinematic', 'true');
     setHasSeenCinematic(true);
-    // If team has no second operative or not started, show team auth
-    if (!teamState.secondOperative) {
+    // If team has no registered squad or no second operative, show team auth
+    if (!teamState.teamId || !teamState.secondOperative) {
       setShowAuthModal(true);
     }
   };
@@ -103,8 +104,8 @@ export default function App() {
     setCurrentView('sector');
   };
 
-  const handleClaimQr = () => {
-    const xp = teamManager.claimBonus('hiddenQr');
+  const handleClaimQr = async () => {
+    const xp = await teamManager.claimBonus('hiddenQr');
     if (xp > 0) {
       soundFx.playFlagSuccess();
       setBonusClaimedNotice(`BONUS MISSION SOLVED: HIDDEN QR DECODED (+${xp} XP)`);
@@ -121,7 +122,7 @@ export default function App() {
   }
 
   // 2. MISSION LOBBY (STANDBY / COUNTDOWN BEFORE 105M TIMER STARTS)
-  if (teamState.status === 'lobby' || teamState.status === 'countdown') {
+  if (teamState.status === 'WAITING' || teamState.status === 'lobby' || teamState.status === 'countdown') {
     return (
       <div className="relative min-h-screen bg-gradient-to-b from-[#020614] via-[#030e20] to-[#020614]">
         {/* Anti-Inspect Security Warning Banner */}

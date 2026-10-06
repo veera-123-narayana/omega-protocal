@@ -1,31 +1,56 @@
-import { TeamState, OperativeProfile, OperativeRole, SubmissionRecord, LeaderboardEntry } from '../types';
+import {
+  TeamState,
+  OperativeProfile,
+  OperativeRole,
+  SubmissionRecord,
+  ChatMessage,
+} from '../types';
 import { SECTORS } from '../data/sectors';
 import { validateSectorFlag } from '../utils/validation';
+import {
+  createTeamInFirestore,
+  authenticateJoinTeam,
+  listenToTeam,
+  listenToEventConfig,
+  saveEventConfig,
+  startMissionInFirebase,
+  updateTeamInFirebase,
+  recordSolveInFirebase,
+  resetSingleTeamInFirebase,
+  resetAllTeamsInFirebase,
+  deleteTeamFromFirebase,
+  deleteLegacyDemoTeams,
+  syncChatMessageToFirebase,
+  listenToTeamChat,
+  CreateTeamPayload,
+} from './firebaseService';
+import { Unsubscribe } from 'firebase/firestore';
 
-const STORAGE_KEY = 'system_omega_team_state';
+const STORAGE_KEY = 'system_omega_team_state_v2';
 const BROADCAST_CHANNEL_NAME = 'system_omega_sync_channel';
 
-// Default initial team state
-export function createInitialTeamState(teamId: string = 'OMEGA-017', teamName: string = 'CYBER VANGUARD', leaderUsername: string = 'KAI_ZERO'): TeamState {
-  const leader: OperativeProfile = {
-    id: `op-a-${Date.now()}`,
-    username: leaderUsername,
-    role: 'OPERATIVE_A',
-    isLeader: true,
-    isReady: false,
-    isOnline: true,
-    lastActive: Date.now(),
-  };
-
+// Clean initial empty team state (ZERO PREDEFINED TEAMS)
+export function createEmptyTeamState(): TeamState {
   return {
-    teamId,
-    teamName,
-    leader,
+    teamId: '',
+    teamName: '',
+    leader: {
+      id: '',
+      username: '',
+      email: '',
+      role: 'OPERATIVE_A',
+      isLeader: true,
+      isReady: false,
+      isOnline: false,
+      lastActive: 0,
+    },
     secondOperative: null,
     secondOperativePassword: '',
-    status: 'lobby',
+    status: 'WAITING',
     missionStartedAt: null,
+    missionEndAt: null,
     missionDurationMinutes: 105,
+    lastSolvedAt: null,
     score: 0,
     completedSectors: [],
     unlockedSectors: ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14', '15'],
@@ -42,16 +67,7 @@ export function createInitialTeamState(teamId: string = 'OMEGA-017', teamName: s
     },
     aiViolations: 0,
     completedAt: null,
-    chatMessages: [
-      {
-        id: 'msg-init-1',
-        senderRole: 'OPERATIVE_A',
-        senderName: 'SYSTEM',
-        text: 'SECURE TACTICAL CHANNEL ESTABLISHED. All 15 sectors accessible.',
-        timestamp: Date.now() - 60000,
-        isTacticalAlert: true,
-      },
-    ],
+    chatMessages: [],
   };
 }
 
@@ -60,17 +76,20 @@ class TeamManager {
   private channel: BroadcastChannel | null = null;
   private listeners: Set<(state: TeamState) => void> = new Set();
   private currentOperativeRole: OperativeRole = 'OPERATIVE_A';
+  private teamUnsubscribe: Unsubscribe | null = null;
+  private chatUnsubscribe: Unsubscribe | null = null;
+  private configUnsubscribe: Unsubscribe | null = null;
 
   constructor() {
     this.state = this.loadState();
 
+    // BroadcastChannel for cross-tab local communication
     if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
       try {
         this.channel = new BroadcastChannel(BROADCAST_CHANNEL_NAME);
         this.channel.onmessage = (event) => {
           if (event.data && event.data.type === 'STATE_SYNC') {
             this.state = event.data.state;
-            this.saveToStorage(false);
             this.notify();
           }
         };
@@ -78,31 +97,60 @@ class TeamManager {
         console.warn('BroadcastChannel unavailable', e);
       }
     }
+
+    // Attach global event config listener
+    this.configUnsubscribe = listenToEventConfig((cfg) => {
+      if (cfg && cfg.durationMinutes && cfg.durationMinutes !== this.state.missionDurationMinutes) {
+        this.state.missionDurationMinutes = cfg.durationMinutes;
+        this.notify();
+      }
+    });
+
+    // If a registered team was restored from storage, attach Firebase listeners immediately
+    if (this.state.teamId) {
+      this.bindFirebaseTeam(this.state.teamId);
+    }
   }
 
   private loadState(): TeamState {
-    if (typeof window === 'undefined') return createInitialTeamState();
+    if (typeof window === 'undefined') return createEmptyTeamState();
     try {
+      // Clear legacy storage keys containing demo teams
+      localStorage.removeItem('system_omega_team_state');
+
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (parsed && parsed.teamId) {
-          if (!parsed.chatMessages) parsed.chatMessages = [];
-          // Ensure all 15 sectors accessible at any time
-          parsed.unlockedSectors = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14', '15'];
+        // Ensure no legacy demo team is retained
+        const demoTeamIds = ['OMEGA-017', 'OMEGA-031', 'OMEGA-092', 'OMEGA-044', 'OMEGA-009', 'OMEGA-056', 'OMEGA-112', 'squad-1', 'squad-2', 'squad-3'];
+        const demoNames = ['CYBER VANGUARD', 'CYBER PIONEERS', 'QUANTUM VANGUARD', 'ZERO DAY SYNDICATE', 'NULL_POINTER_ELITE'];
+
+        if (
+          parsed &&
+          parsed.teamId &&
+          !demoTeamIds.includes(parsed.teamId.toUpperCase()) &&
+          !demoNames.includes((parsed.teamName || '').toUpperCase())
+        ) {
+          if (!parsed.unlockedSectors || parsed.unlockedSectors.length === 0) {
+            parsed.unlockedSectors = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14', '15'];
+          }
           return parsed;
         }
       }
     } catch {
-      // Fall through to initial
+      // fallback
     }
-    return createInitialTeamState();
+    return createEmptyTeamState();
   }
 
   private saveToStorage(broadcast: boolean = true) {
     if (typeof window === 'undefined') return;
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state));
+      if (!this.state.teamId) {
+        localStorage.removeItem(STORAGE_KEY);
+      } else {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state));
+      }
       if (broadcast && this.channel) {
         this.channel.postMessage({ type: 'STATE_SYNC', state: this.state });
       }
@@ -113,6 +161,81 @@ class TeamManager {
 
   private notify() {
     this.listeners.forEach((listener) => listener(this.state));
+  }
+
+  private bindFirebaseTeam(teamId: string) {
+    if (this.teamUnsubscribe) {
+      this.teamUnsubscribe();
+      this.teamUnsubscribe = null;
+    }
+    if (this.chatUnsubscribe) {
+      this.chatUnsubscribe();
+      this.chatUnsubscribe = null;
+    }
+
+    // Real-time Firestore sync
+    this.teamUnsubscribe = listenToTeam(teamId, (teamDoc) => {
+      if (!teamDoc) {
+        // Team was deleted remotely
+        if (this.state.teamId === teamId) {
+          this.state = createEmptyTeamState();
+          this.saveToStorage();
+          this.notify();
+        }
+        return;
+      }
+
+      // Merge authoritative Firestore state into local state
+      const prevActiveSector = this.state.activeSectorId;
+      this.state.teamName = teamDoc.teamName || this.state.teamName;
+      this.state.score = typeof teamDoc.score === 'number' ? teamDoc.score : this.state.score;
+      this.state.status = teamDoc.status || this.state.status;
+      this.state.missionStartedAt = teamDoc.missionStartedAt ?? null;
+      this.state.missionEndAt = teamDoc.missionEndAt ?? null;
+      this.state.lastSolvedAt = teamDoc.lastSolvedAt ?? null;
+      this.state.completedSectors = Array.isArray(teamDoc.completedSectors) ? teamDoc.completedSectors : [];
+      this.state.unlockedSectors = Array.isArray(teamDoc.unlockedSectors) && teamDoc.unlockedSectors.length > 0
+        ? teamDoc.unlockedSectors
+        : ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14', '15'];
+      this.state.hintsUsed = teamDoc.hintsUsed || {};
+      this.state.penalties = teamDoc.penalties || 0;
+      this.state.speedBonus = teamDoc.speedBonus || 0;
+      this.state.firstBloodBonus = teamDoc.firstBloodBonus || 0;
+      this.state.submissions = Array.isArray(teamDoc.submissions) ? teamDoc.submissions : this.state.submissions;
+      this.state.activeSectorId = prevActiveSector || '01';
+
+      if (teamDoc.leader) {
+        this.state.leader = {
+          ...this.state.leader,
+          username: teamDoc.leader.username || this.state.leader.username,
+          email: teamDoc.leader.email || this.state.leader.email,
+          isOnline: teamDoc.leader.isOnline ?? true,
+          isReady: teamDoc.leader.isReady ?? false,
+        };
+      }
+
+      if (teamDoc.operative2) {
+        this.state.secondOperative = {
+          id: `op-b-${teamDoc.teamId}`,
+          username: teamDoc.operative2.username || '',
+          email: teamDoc.operative2.email || '',
+          role: 'OPERATIVE_B',
+          isLeader: false,
+          isOnline: teamDoc.operative2.isOnline ?? false,
+          isReady: teamDoc.operative2.isReady ?? false,
+          lastActive: teamDoc.operative2.lastActive || 0,
+        };
+      }
+
+      this.saveToStorage(false);
+      this.notify();
+    });
+
+    // Real-time Chat sync
+    this.chatUnsubscribe = listenToTeamChat(teamId, (msgs) => {
+      this.state.chatMessages = msgs;
+      this.notify();
+    });
   }
 
   public subscribe(listener: (state: TeamState) => void): () => void {
@@ -127,6 +250,10 @@ class TeamManager {
     return this.state;
   }
 
+  public hasTeam(): boolean {
+    return Boolean(this.state.teamId && this.state.teamName);
+  }
+
   public getCurrentRole(): OperativeRole {
     return this.currentOperativeRole;
   }
@@ -136,88 +263,186 @@ class TeamManager {
     this.notify();
   }
 
-  public initializeTeam(teamName: string, leaderUsername: string): string {
-    const randomNum = Math.floor(10 + Math.random() * 90);
-    const teamId = `OMEGA-0${randomNum}`;
-    this.state = createInitialTeamState(teamId, teamName.toUpperCase(), leaderUsername.toUpperCase());
-    this.currentOperativeRole = 'OPERATIVE_A';
-    this.saveToStorage();
-    this.notify();
-    return teamId;
-  }
+  /**
+   * Register a new squad in Firebase Firestore
+   */
+  public async registerTeam(payload: CreateTeamPayload): Promise<{ success: boolean; error?: string }> {
+    const res = await createTeamInFirestore(payload);
+    if (!res.success) {
+      return res;
+    }
 
-  public createSecondOperative(username: string, password: string) {
-    const second: OperativeProfile = {
-      id: `op-b-${Date.now()}`,
-      username: username.toUpperCase(),
-      role: 'OPERATIVE_B',
-      isLeader: false,
+    const leader: OperativeProfile = {
+      id: `op-a-${Date.now()}`,
+      username: payload.leaderUsername.trim().toUpperCase(),
+      email: payload.leaderEmail.trim().toLowerCase(),
+      role: 'OPERATIVE_A',
+      isLeader: true,
       isReady: false,
       isOnline: true,
       lastActive: Date.now(),
     };
-    this.state.secondOperative = second;
-    this.state.secondOperativePassword = password;
+
+    const second: OperativeProfile = {
+      id: `op-b-${Date.now()}`,
+      username: payload.operative2Username.trim().toUpperCase(),
+      email: payload.operative2Email.trim().toLowerCase(),
+      role: 'OPERATIVE_B',
+      isLeader: false,
+      isReady: false,
+      isOnline: false,
+      lastActive: Date.now(),
+    };
+
+    this.state = {
+      ...createEmptyTeamState(),
+      teamId: payload.teamId,
+      teamName: payload.teamName.trim().toUpperCase(),
+      leader,
+      secondOperative: second,
+      secondOperativePassword: payload.operative2Password,
+      status: 'WAITING',
+    };
+
+    this.currentOperativeRole = 'OPERATIVE_A';
     this.saveToStorage();
     this.notify();
+    this.bindFirebaseTeam(payload.teamId);
+
+    return { success: true };
   }
 
-  public joinAsSecondOperative(teamId: string, username: string, password: string): boolean {
-    if (this.state.teamId.toUpperCase() !== teamId.toUpperCase()) {
-      return false;
+  /**
+   * Join an existing team in Firebase
+   */
+  public async joinTeam(
+    teamId: string,
+    usernameOrEmail: string,
+    password: string
+  ): Promise<{ success: boolean; error?: string }> {
+    const res = await authenticateJoinTeam(teamId, usernameOrEmail, password);
+    if (!res.success || !res.teamData) {
+      return { success: false, error: res.error || 'Failed to authenticate team.' };
     }
-    if (this.state.secondOperativePassword && this.state.secondOperativePassword !== password) {
-      return false;
-    }
-    if (!this.state.secondOperative) {
-      this.createSecondOperative(username, password);
-    } else {
-      this.state.secondOperative.isOnline = true;
-      this.state.secondOperative.lastActive = Date.now();
-    }
-    this.currentOperativeRole = 'OPERATIVE_B';
+
+    const docData = res.teamData;
+    const assignedRole = res.role || 'OPERATIVE_B';
+    this.currentOperativeRole = assignedRole;
+
+    const leader: OperativeProfile = {
+      id: `op-a-${docData.teamId}`,
+      username: docData.leader?.username || '',
+      email: docData.leader?.email || '',
+      role: 'OPERATIVE_A',
+      isLeader: true,
+      isReady: docData.leader?.isReady || false,
+      isOnline: docData.leader?.isOnline || true,
+      lastActive: docData.leader?.lastActive || Date.now(),
+    };
+
+    const second: OperativeProfile | null = docData.operative2
+      ? {
+          id: `op-b-${docData.teamId}`,
+          username: docData.operative2?.username || '',
+          email: docData.operative2?.email || '',
+          role: 'OPERATIVE_B',
+          isLeader: false,
+          isReady: docData.operative2?.isReady || false,
+          isOnline: true,
+          lastActive: Date.now(),
+        }
+      : null;
+
+    this.state = {
+      ...createEmptyTeamState(),
+      teamId: docData.teamId,
+      teamName: docData.teamName,
+      leader,
+      secondOperative: second,
+      status: docData.status || 'WAITING',
+      score: docData.score || 0,
+      completedSectors: docData.completedSectors || [],
+      unlockedSectors: docData.unlockedSectors || ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14', '15'],
+      missionStartedAt: docData.missionStartedAt || null,
+      missionEndAt: docData.missionEndAt || null,
+      missionDurationMinutes: docData.missionDurationMinutes || 105,
+      lastSolvedAt: docData.lastSolvedAt || null,
+      hintsUsed: docData.hintsUsed || {},
+      penalties: docData.penalties || 0,
+      submissions: docData.submissions || [],
+    };
+
     this.saveToStorage();
     this.notify();
-    return true;
+    this.bindFirebaseTeam(docData.teamId);
+
+    return { success: true };
   }
 
-  public toggleOperativeReady(role: OperativeRole) {
+  /**
+   * Toggle operative ready state (synced to Firebase)
+   */
+  public async toggleOperativeReady(role: OperativeRole) {
+    if (!this.state.teamId) return;
+
     if (role === 'OPERATIVE_A') {
-      this.state.leader.isReady = !this.state.leader.isReady;
+      const next = !this.state.leader.isReady;
+      this.state.leader.isReady = next;
+      await updateTeamInFirebase(this.state.teamId, { 'leader.isReady': next });
     } else if (this.state.secondOperative) {
-      this.state.secondOperative.isReady = !this.state.secondOperative.isReady;
+      const next = !this.state.secondOperative.isReady;
+      this.state.secondOperative.isReady = next;
+      await updateTeamInFirebase(this.state.teamId, { 'operative2.isReady': next });
     }
 
-    // Check if both ready
     const isReadyA = this.state.leader.isReady;
     const isReadyB = this.state.secondOperative ? this.state.secondOperative.isReady : false;
 
-    if (isReadyA && isReadyB && this.state.status === 'lobby') {
+    if (isReadyA && isReadyB && (this.state.status === 'WAITING' || this.state.status === 'lobby')) {
       this.state.status = 'countdown';
+      await updateTeamInFirebase(this.state.teamId, { status: 'countdown' });
     } else if (this.state.status === 'countdown' && (!isReadyA || !isReadyB)) {
-      this.state.status = 'lobby';
+      this.state.status = 'WAITING';
+      await updateTeamInFirebase(this.state.teamId, { status: 'WAITING' });
     }
 
     this.saveToStorage();
     this.notify();
   }
 
-  public activateMissionTimer() {
+  /**
+   * Authoritative Mission Timer: Activated in Firebase
+   * Sets missionStartedAt and missionEndAt
+   */
+  public async activateMissionTimer() {
+    if (!this.state.teamId) return;
     if (this.state.missionStartedAt === null) {
-      this.state.missionStartedAt = Date.now();
+      await startMissionInFirebase(this.state.teamId, this.state.missionDurationMinutes);
+      const now = Date.now();
+      this.state.missionStartedAt = now;
+      this.state.missionEndAt = now + this.state.missionDurationMinutes * 60 * 1000;
       this.state.status = 'active';
       this.saveToStorage();
       this.notify();
     }
   }
 
+  /**
+   * Calculates remaining time authoritative against Firebase timestamps
+   * remainingTime = missionEndAt - currentTime
+   * Refreshing the browser or opening another device shows the same remaining time
+   */
   public getRemainingSeconds(): number {
-    if (!this.state.missionStartedAt) {
-      return this.state.missionDurationMinutes * 60;
+    if (this.state.missionEndAt) {
+      const now = Date.now();
+      return Math.max(0, Math.floor((this.state.missionEndAt - now) / 1000));
     }
-    const elapsedSec = Math.floor((Date.now() - this.state.missionStartedAt) / 1000);
-    const totalSec = this.state.missionDurationMinutes * 60;
-    return Math.max(0, totalSec - elapsedSec);
+    if (this.state.missionStartedAt) {
+      const now = Date.now();
+      const end = this.state.missionStartedAt + this.state.missionDurationMinutes * 60 * 1000;
+      return Math.max(0, Math.floor((end - now) / 1000));
+    }
+    return this.state.missionDurationMinutes * 60;
   }
 
   public setActiveSector(sectorId: string) {
@@ -228,25 +453,41 @@ class TeamManager {
     }
   }
 
-  public useHint(sectorId: string, hintIndex: number, cost: number): boolean {
+  public async useHint(sectorId: string, hintIndex: number, cost: number): Promise<boolean> {
     const currentHints = this.state.hintsUsed[sectorId] || 0;
     if (hintIndex === currentHints + 1) {
-      this.state.hintsUsed[sectorId] = hintIndex;
-      this.state.score = Math.max(0, this.state.score - cost);
-      this.state.penalties += cost;
+      const updatedHints = { ...this.state.hintsUsed, [sectorId]: hintIndex };
+      const newScore = Math.max(0, this.state.score - cost);
+      const newPenalties = this.state.penalties + cost;
+
+      this.state.hintsUsed = updatedHints;
+      this.state.score = newScore;
+      this.state.penalties = newPenalties;
       this.saveToStorage();
       this.notify();
+
+      if (this.state.teamId) {
+        await updateTeamInFirebase(this.state.teamId, {
+          hintsUsed: updatedHints,
+          score: newScore,
+          penalties: newPenalties,
+        });
+      }
       return true;
     }
     return false;
   }
 
-  public async submitFlag(sectorId: string, flag: string, operativeName: string): Promise<{ success: boolean; message: string; xpDelta: number }> {
+  public async submitFlag(
+    sectorId: string,
+    flag: string,
+    operativeName: string
+  ): Promise<{ success: boolean; message: string; xpDelta: number }> {
     if (this.state.completedSectors.includes(sectorId)) {
       return { success: false, message: 'SECTOR ALREADY COMPLETED BY OPERATIVE.', xpDelta: 0 };
     }
 
-    const elapsedMin = this.state.missionStartedAt 
+    const elapsedMin = this.state.missionStartedAt
       ? Math.floor((Date.now() - this.state.missionStartedAt) / 60000)
       : 0;
 
@@ -262,49 +503,78 @@ class TeamManager {
       flag,
       isCorrect: validation.isCorrect,
       timestamp: Date.now(),
-      xpDelta: validation.isCorrect ? (baseXp + validation.xpDelta) : validation.xpDelta,
+      xpDelta: validation.isCorrect ? baseXp + validation.xpDelta : validation.xpDelta,
     };
 
     this.state.submissions.unshift(record);
 
     if (validation.isCorrect) {
-      this.state.completedSectors.push(sectorId);
+      const solveTime = Date.now();
+      const updatedCompleted = [...this.state.completedSectors, sectorId];
       const gained = baseXp + validation.xpDelta;
-      this.state.score += gained;
-      this.state.speedBonus += validation.speedBonusAwarded;
-      if (validation.firstBloodAwarded) {
-        this.state.firstBloodBonus += 25;
-      }
+      const newScore = this.state.score + gained;
+      const newSpeed = this.state.speedBonus + validation.speedBonusAwarded;
+      const newFirstBlood = validation.firstBloodAwarded ? this.state.firstBloodBonus + 25 : this.state.firstBloodBonus;
 
-      // Check unlock prerequisites for other sectors
+      // Unlocked sectors calculation
+      const updatedUnlocked = [...this.state.unlockedSectors];
       SECTORS.forEach((sec) => {
-        if (!this.state.unlockedSectors.includes(sec.id)) {
-          const allPrereqsMet = sec.prerequisites.every((req) => this.state.completedSectors.includes(req));
+        if (!updatedUnlocked.includes(sec.id)) {
+          const allPrereqsMet = sec.prerequisites.every((req) => updatedCompleted.includes(req));
           if (allPrereqsMet) {
-            this.state.unlockedSectors.push(sec.id);
+            updatedUnlocked.push(sec.id);
           }
         }
       });
 
-      // Check if Sector 15 Omega Core completed
+      this.state.completedSectors = updatedCompleted;
+      this.state.unlockedSectors = updatedUnlocked;
+      this.state.score = newScore;
+      this.state.speedBonus = newSpeed;
+      this.state.firstBloodBonus = newFirstBlood;
+      this.state.lastSolvedAt = solveTime;
+
       if (sectorId === '15') {
         this.state.status = 'completed';
-        this.state.completedAt = Date.now();
+        this.state.completedAt = solveTime;
       }
 
       this.saveToStorage();
       this.notify();
+
+      if (this.state.teamId) {
+        await recordSolveInFirebase(
+          this.state.teamId,
+          sectorId,
+          newScore,
+          solveTime,
+          updatedUnlocked,
+          validation.speedBonusAwarded,
+          validation.firstBloodAwarded ? 25 : 0,
+          record
+        );
+      }
+
       return { success: true, message: validation.message, xpDelta: gained };
     } else {
-      this.state.score = Math.max(0, this.state.score - 10);
-      this.state.penalties += 10;
+      const newScore = Math.max(0, this.state.score - 10);
+      const newPenalties = this.state.penalties + 10;
+      this.state.score = newScore;
+      this.state.penalties = newPenalties;
       this.saveToStorage();
       this.notify();
+
+      if (this.state.teamId) {
+        await updateTeamInFirebase(this.state.teamId, {
+          score: newScore,
+          penalties: newPenalties,
+        });
+      }
       return { success: false, message: validation.message, xpDelta: -10 };
     }
   }
 
-  public recordAiPenalty(sectorId: string) {
+  public async recordAiPenalty(sectorId: string) {
     const penaltyTiers = [25, 50, 75, 100];
     const penalty = penaltyTiers[Math.min(this.state.aiViolations, penaltyTiers.length - 1)];
     this.state.aiViolations += 1;
@@ -312,10 +582,18 @@ class TeamManager {
     this.state.penalties += penalty;
     this.saveToStorage();
     this.notify();
+
+    if (this.state.teamId) {
+      await updateTeamInFirebase(this.state.teamId, {
+        aiViolations: this.state.aiViolations,
+        score: this.state.score,
+        penalties: this.state.penalties,
+      });
+    }
     return penalty;
   }
 
-  public claimBonus(bonusType: 'hiddenQr' | 'easterEgg' | 'speedChallenge'): number {
+  public async claimBonus(bonusType: 'hiddenQr' | 'easterEgg' | 'speedChallenge'): Promise<number> {
     if (this.state.bonusMissions[bonusType]) return 0;
     this.state.bonusMissions[bonusType] = true;
     const bonusMap = { hiddenQr: 50, easterEgg: 75, speedChallenge: 100 };
@@ -323,17 +601,25 @@ class TeamManager {
     this.state.score += xp;
     this.saveToStorage();
     this.notify();
+
+    if (this.state.teamId) {
+      await updateTeamInFirebase(this.state.teamId, {
+        bonusMissions: this.state.bonusMissions,
+        score: this.state.score,
+      });
+    }
     return xp;
   }
 
-  public sendChatMessage(text: string, isTacticalAlert: boolean = false) {
-    if (!text.trim()) return;
+  public async sendChatMessage(text: string, isTacticalAlert: boolean = false) {
+    if (!text.trim() || !this.state.teamId) return;
     const currentRole = this.currentOperativeRole;
-    const senderName = currentRole === 'OPERATIVE_A'
-      ? this.state.leader.username
-      : this.state.secondOperative?.username || 'OPERATIVE_B';
+    const senderName =
+      currentRole === 'OPERATIVE_A'
+        ? this.state.leader.username
+        : this.state.secondOperative?.username || 'OPERATIVE_B';
 
-    const newMsg = {
+    const newMsg: ChatMessage = {
       id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       senderRole: currentRole,
       senderName,
@@ -348,6 +634,8 @@ class TeamManager {
     this.state.chatMessages.push(newMsg);
     this.saveToStorage();
     this.notify();
+
+    await syncChatMessageToFirebase(this.state.teamId, newMsg);
   }
 
   public clearChat() {
@@ -356,77 +644,94 @@ class TeamManager {
     this.notify();
   }
 
-  // Admin controls
-  public adminResetTeam() {
-    this.state = createInitialTeamState();
-    this.saveToStorage();
-    this.notify();
+  // ================= ADMIN CONTROLS =================
+
+  /**
+   * Admin: Reset a single team (or current team)
+   * Keeps registration information, resets score, sectors, timer, status
+   */
+  public async adminResetTeam(targetTeamId?: string) {
+    const tid = targetTeamId || this.state.teamId;
+    if (!tid) return;
+    await resetSingleTeamInFirebase(tid);
   }
 
-  public adminAddMinutes(mins: number) {
-    this.state.missionDurationMinutes += mins;
-    this.saveToStorage();
-    this.notify();
+  /**
+   * Admin: Reset ALL teams
+   */
+  public async adminResetAllTeams(): Promise<number> {
+    return await resetAllTeamsInFirebase();
   }
 
-  public adminAdjustScore(delta: number) {
+  /**
+   * Admin: Delete team completely from Firestore
+   */
+  public async adminDeleteTeam(teamId: string): Promise<boolean> {
+    const ok = await deleteTeamFromFirebase(teamId);
+    if (ok && this.state.teamId === teamId) {
+      this.state = createEmptyTeamState();
+      this.saveToStorage();
+      this.notify();
+    }
+    return ok;
+  }
+
+  /**
+   * Admin: Purge legacy/demo teams from Firestore
+   */
+  public async adminPurgeLegacyDemos(): Promise<number> {
+    return await deleteLegacyDemoTeams();
+  }
+
+  /**
+   * Admin: Add/Remove minutes from timer
+   */
+  public async adminAddMinutes(mins: number) {
+    this.state.missionDurationMinutes = Math.max(5, this.state.missionDurationMinutes + mins);
+    if (this.state.missionEndAt) {
+      this.state.missionEndAt = this.state.missionEndAt + mins * 60 * 1000;
+    }
+    this.saveToStorage();
+    this.notify();
+
+    if (this.state.teamId) {
+      await updateTeamInFirebase(this.state.teamId, {
+        missionDurationMinutes: this.state.missionDurationMinutes,
+        missionEndAt: this.state.missionEndAt,
+      });
+    }
+  }
+
+  /**
+   * Admin: Save custom mission duration to Firebase eventConfig/main
+   */
+  public async adminSetCustomDuration(minutes: number): Promise<boolean> {
+    const duration = Math.max(5, Math.min(600, minutes));
+    this.state.missionDurationMinutes = duration;
+    this.saveToStorage();
+    this.notify();
+    return await saveEventConfig(duration);
+  }
+
+  public async adminAdjustScore(delta: number) {
     this.state.score = Math.max(0, this.state.score + delta);
     this.saveToStorage();
     this.notify();
+
+    if (this.state.teamId) {
+      await updateTeamInFirebase(this.state.teamId, { score: this.state.score });
+    }
   }
 
-  public adminUnlockAllSectors() {
+  public async adminUnlockAllSectors() {
     this.state.unlockedSectors = SECTORS.map((s) => s.id);
     this.saveToStorage();
     this.notify();
+
+    if (this.state.teamId) {
+      await updateTeamInFirebase(this.state.teamId, { unlockedSectors: this.state.unlockedSectors });
+    }
   }
 }
 
-export interface PredefinedSquad {
-  id: string;
-  teamName: string;
-  leaderUsername: string;
-  secondUsername: string;
-  secondPassword: string;
-  tagline: string;
-}
-
-export const PREDEFINED_SQUADS: PredefinedSquad[] = [
-  {
-    id: 'squad-1',
-    teamName: 'CYBER PIONEERS',
-    leaderUsername: 'NEXUS_ALPHA',
-    secondUsername: 'CIPHER_GHOST',
-    secondPassword: 'vault_protocol_99',
-    tagline: 'Elite penetration & cryptographic reconnaissance squad',
-  },
-  {
-    id: 'squad-2',
-    teamName: 'QUANTUM VANGUARD',
-    leaderUsername: 'KAI_ZERO',
-    secondUsername: 'NOVA_PRIME',
-    secondPassword: 'nexus_alpha_2026',
-    tagline: 'Specialized in signal intelligence & kernel reverse engineering',
-  },
-  {
-    id: 'squad-3',
-    teamName: 'ZERO DAY SYNDICATE',
-    leaderUsername: 'V4ND4L_ROOT',
-    secondUsername: 'SPECTRE_88',
-    secondPassword: 'matrix_core_77',
-    tagline: 'Defensive algorithm & network traffic exploitation unit',
-  },
-];
-
 export const teamManager = new TeamManager();
-
-// Mock Leaderboard data
-export const MOCK_LEADERBOARD: LeaderboardEntry[] = [
-  { rank: 1, teamId: 'OMEGA-031', teamName: 'NULL_POINTER_ELITE', xp: 2340, sectorsCount: 14, status: 'ACTIVE', lastSolvedTime: '12m ago' },
-  { rank: 2, teamId: 'OMEGA-017', teamName: 'CYBER VANGUARD', xp: 2115, sectorsCount: 13, status: 'ACTIVE', lastSolvedTime: '2m ago' },
-  { rank: 3, teamId: 'OMEGA-092', teamName: 'SYN_ACK_CHADS', xp: 2020, sectorsCount: 12, status: 'ACTIVE', lastSolvedTime: '18m ago' },
-  { rank: 4, teamId: 'OMEGA-044', teamName: 'QUANTUM_OVERFLOW', xp: 1950, sectorsCount: 12, status: 'ACTIVE', lastSolvedTime: '24m ago' },
-  { rank: 5, teamId: 'OMEGA-009', teamName: 'RED_TEAM_SHADOWS', xp: 1810, sectorsCount: 11, status: 'ACTIVE', lastSolvedTime: '31m ago' },
-  { rank: 6, teamId: 'OMEGA-056', teamName: 'BYTE_FORCE_ZERO', xp: 1640, sectorsCount: 10, status: 'ACTIVE', lastSolvedTime: '45m ago' },
-  { rank: 7, teamId: 'OMEGA-112', teamName: 'KERNEL_PANIC_SQUAD', xp: 1420, sectorsCount: 9, status: 'ACTIVE', lastSolvedTime: '52m ago' },
-];

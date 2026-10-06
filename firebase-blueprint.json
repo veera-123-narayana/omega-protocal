@@ -21,12 +21,20 @@
         },
         "status": {
           "type": "string",
-          "enum": ["idle", "lobby", "countdown", "active", "completed", "failed"],
+          "enum": ["idle", "lobby", "countdown", "active", "completed", "failed", "WAITING"],
           "description": "Current state of the escape room mission"
         },
         "missionStartedAt": {
           "type": "number",
-          "description": "Server epoch timestamp when 105m countdown began"
+          "description": "Server epoch timestamp when countdown began"
+        },
+        "missionEndAt": {
+          "type": "number",
+          "description": "Authoritative server epoch timestamp when mission expires"
+        },
+        "lastSolvedAt": {
+          "type": "number",
+          "description": "Timestamp of most recent sector solve"
         }
       },
       "required": ["teamId", "teamName", "score", "status"]
@@ -60,6 +68,24 @@
         }
       },
       "required": ["id", "senderRole", "senderName", "text", "timestamp"]
+    },
+    "EventConfig": {
+      "title": "EventConfig",
+      "description": "Authoritative event configuration including mission timer duration",
+      "type": "object",
+      "properties": {
+        "durationMinutes": {
+          "type": "number",
+          "description": "Mission duration in minutes (default 105)"
+        },
+        "updatedAt": {
+          "type": "number"
+        },
+        "updatedBy": {
+          "type": "string"
+        }
+      },
+      "required": ["durationMinutes"]
     }
   },
   "firestore": {
@@ -70,6 +96,10 @@
     "/teams/{teamId}/messages/{messageId}": {
       "schema": "ChatMessage",
       "description": "Synchronized tactical chat messages within the squad"
+    },
+    "/eventConfig/{configId}": {
+      "schema": "EventConfig",
+      "description": "Global event configuration parameters such as timer duration"
     }
   }
 }

@@ -32,7 +32,7 @@ export const CommandCenterHUD: React.FC<CommandCenterHUDProps> = ({
     updateTimer();
     const interval = setInterval(updateTimer, 1000);
     return () => clearInterval(interval);
-  }, [teamState.missionStartedAt, teamState.missionDurationMinutes]);
+  }, [teamState.missionStartedAt, teamState.missionEndAt, teamState.missionDurationMinutes]);
 
   const formatTimer = (totalSeconds: number): string => {
     const mins = Math.floor(totalSeconds / 60);

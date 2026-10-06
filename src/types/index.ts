@@ -3,6 +3,7 @@ export type OperativeRole = 'OPERATIVE_A' | 'OPERATIVE_B';
 export interface OperativeProfile {
   id: string;
   username: string;
+  email?: string;
   role: OperativeRole;
   isLeader: boolean;
   isReady: boolean;
@@ -10,7 +11,7 @@ export interface OperativeProfile {
   lastActive: number;
 }
 
-export type MissionStatus = 'idle' | 'lobby' | 'countdown' | 'active' | 'completed' | 'failed';
+export type MissionStatus = 'idle' | 'lobby' | 'countdown' | 'active' | 'completed' | 'failed' | 'WAITING';
 
 export interface SubmissionRecord {
   id: string;
@@ -37,9 +38,15 @@ export interface TeamState {
   leader: OperativeProfile;
   secondOperative: OperativeProfile | null;
   secondOperativePassword?: string;
+  leaderPasswordHash?: string;
+  secondOperativePasswordHash?: string;
   status: MissionStatus;
   missionStartedAt: number | null;
+  missionEndAt: number | null;
   missionDurationMinutes: number; // 105
+  lastSolvedAt: number | null;
+  createdAt?: number;
+  updatedAt?: number;
   score: number;
   completedSectors: string[]; // ['01', '02', ...]
   unlockedSectors: string[];
@@ -115,6 +122,8 @@ export interface LeaderboardEntry {
   teamName: string;
   xp: number;
   sectorsCount: number;
-  status: 'ACTIVE' | 'COMPLETED' | 'STANDBY';
+  status: 'ACTIVE' | 'COMPLETED' | 'STANDBY' | 'WAITING';
+  lastSolvedAt?: number | null;
   lastSolvedTime: string;
+  isCurrentTeam?: boolean;
 }

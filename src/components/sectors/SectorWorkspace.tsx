@@ -95,9 +95,9 @@ export const SectorWorkspace: React.FC<SectorWorkspaceProps> = ({
     } catch {}
   };
 
-  const handleUnlockHint = (hintIndex: number, cost: number) => {
+  const handleUnlockHint = async (hintIndex: number, cost: number) => {
     soundFx.playKeyTick();
-    const ok = teamManager.useHint(sector.id, hintIndex, cost);
+    const ok = await teamManager.useHint(sector.id, hintIndex, cost);
     if (ok) {
       soundFx.playFlagError(); // Deducted warning tone
     }
