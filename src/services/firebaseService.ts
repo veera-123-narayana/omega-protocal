@@ -294,24 +294,56 @@ export function listenToEventConfig(callback: (config: { durationMinutes: number
 
 /**
  * Save event configuration in Firebase: eventConfig/main
+ * Also broadcasts to all team documents so every user device updates immediately
  */
-export async function saveEventConfig(durationMinutes: number): Promise<boolean> {
+export async function applyEventDurationChange(
+  newDurationMinutes: number,
+  deltaMinutes?: number
+): Promise<boolean> {
   try {
     const configRef = doc(db, 'eventConfig', 'main');
     await setDoc(
       configRef,
       {
-        durationMinutes,
+        durationMinutes: newDurationMinutes,
         updatedAt: serverTimestamp(),
         updatedBy: 'ADMIN',
       },
       { merge: true }
     );
+
+    // Update all team documents in Firestore
+    const snap = await getDocs(collection(db, 'teams'));
+    const updates = snap.docs.map(async (docSnap) => {
+      const data = docSnap.data();
+      const payload: Record<string, any> = {
+        missionDurationMinutes: newDurationMinutes,
+        updatedAt: serverTimestamp(),
+      };
+
+      if (data.missionStartedAt) {
+        let newEndAt: number;
+        if (deltaMinutes !== undefined && data.missionEndAt) {
+          newEndAt = data.missionEndAt + deltaMinutes * 60 * 1000;
+        } else {
+          newEndAt = data.missionStartedAt + newDurationMinutes * 60 * 1000;
+        }
+        payload.missionEndAt = newEndAt;
+      }
+
+      await updateDoc(docSnap.ref, payload);
+    });
+
+    await Promise.all(updates);
     return true;
   } catch (e) {
-    console.error('Failed to save event config:', e);
+    console.error('Failed to apply event duration change:', e);
     return false;
   }
+}
+
+export async function saveEventConfig(durationMinutes: number): Promise<boolean> {
+  return await applyEventDurationChange(durationMinutes);
 }
 
 /**

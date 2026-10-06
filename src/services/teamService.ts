@@ -13,6 +13,7 @@ import {
   listenToTeam,
   listenToEventConfig,
   saveEventConfig,
+  applyEventDurationChange,
   startMissionInFirebase,
   updateTeamInFirebase,
   recordSolveInFirebase,
@@ -100,9 +101,18 @@ class TeamManager {
 
     // Attach global event config listener
     this.configUnsubscribe = listenToEventConfig((cfg) => {
-      if (cfg && cfg.durationMinutes && cfg.durationMinutes !== this.state.missionDurationMinutes) {
-        this.state.missionDurationMinutes = cfg.durationMinutes;
-        this.notify();
+      if (cfg && typeof cfg.durationMinutes === 'number') {
+        const delta = cfg.durationMinutes - this.state.missionDurationMinutes;
+        if (delta !== 0 || cfg.durationMinutes !== this.state.missionDurationMinutes) {
+          this.state.missionDurationMinutes = cfg.durationMinutes;
+          if (this.state.missionEndAt) {
+            this.state.missionEndAt += delta * 60 * 1000;
+          } else if (this.state.missionStartedAt) {
+            this.state.missionEndAt = this.state.missionStartedAt + cfg.durationMinutes * 60 * 1000;
+          }
+          this.saveToStorage(false);
+          this.notify();
+        }
       }
     });
 
@@ -190,6 +200,9 @@ class TeamManager {
       this.state.teamName = teamDoc.teamName || this.state.teamName;
       this.state.score = typeof teamDoc.score === 'number' ? teamDoc.score : this.state.score;
       this.state.status = teamDoc.status || this.state.status;
+      if (typeof teamDoc.missionDurationMinutes === 'number') {
+        this.state.missionDurationMinutes = teamDoc.missionDurationMinutes;
+      }
       this.state.missionStartedAt = teamDoc.missionStartedAt ?? null;
       this.state.missionEndAt = teamDoc.missionEndAt ?? null;
       this.state.lastSolvedAt = teamDoc.lastSolvedAt ?? null;
@@ -684,33 +697,38 @@ class TeamManager {
   }
 
   /**
-   * Admin: Add/Remove minutes from timer
+   * Admin: Add/Remove minutes from timer (synchronized globally across Firestore)
    */
   public async adminAddMinutes(mins: number) {
-    this.state.missionDurationMinutes = Math.max(5, this.state.missionDurationMinutes + mins);
+    const newDuration = Math.max(5, this.state.missionDurationMinutes + mins);
+    this.state.missionDurationMinutes = newDuration;
     if (this.state.missionEndAt) {
-      this.state.missionEndAt = this.state.missionEndAt + mins * 60 * 1000;
+      this.state.missionEndAt += mins * 60 * 1000;
+    } else if (this.state.missionStartedAt) {
+      this.state.missionEndAt = this.state.missionStartedAt + newDuration * 60 * 1000;
     }
-    this.saveToStorage();
+    this.saveToStorage(true);
     this.notify();
 
-    if (this.state.teamId) {
-      await updateTeamInFirebase(this.state.teamId, {
-        missionDurationMinutes: this.state.missionDurationMinutes,
-        missionEndAt: this.state.missionEndAt,
-      });
-    }
+    await applyEventDurationChange(newDuration, mins);
   }
 
   /**
-   * Admin: Save custom mission duration to Firebase eventConfig/main
+   * Admin: Save custom mission duration to Firebase eventConfig/main & all squads
    */
   public async adminSetCustomDuration(minutes: number): Promise<boolean> {
-    const duration = Math.max(5, Math.min(600, minutes));
-    this.state.missionDurationMinutes = duration;
-    this.saveToStorage();
+    const newDuration = Math.max(5, Math.min(600, minutes));
+    const delta = newDuration - this.state.missionDurationMinutes;
+    this.state.missionDurationMinutes = newDuration;
+    if (this.state.missionEndAt) {
+      this.state.missionEndAt += delta * 60 * 1000;
+    } else if (this.state.missionStartedAt) {
+      this.state.missionEndAt = this.state.missionStartedAt + newDuration * 60 * 1000;
+    }
+    this.saveToStorage(true);
     this.notify();
-    return await saveEventConfig(duration);
+
+    return await applyEventDurationChange(newDuration, delta);
   }
 
   public async adminAdjustScore(delta: number) {

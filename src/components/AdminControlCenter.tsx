@@ -15,6 +15,7 @@ import {
   X,
   Users,
   ShieldCheck,
+  Lock,
 } from 'lucide-react';
 
 interface AdminControlCenterProps {
@@ -31,9 +32,38 @@ export const AdminControlCenter: React.FC<AdminControlCenterProps> = ({ teamStat
   const [configuredDuration, setConfiguredDuration] = useState<number>(105);
   const [customDurationInput, setCustomDurationInput] = useState<string>('105');
   const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [remainingSec, setRemainingSec] = useState<number>(() => teamManager.getRemainingSeconds());
 
   const [emergencyAlert, setEmergencyAlert] = useState('');
   const [alertSent, setAlertSent] = useState(false);
+
+  // In-App Confirmation Modal States (Replaces window.confirm for iframe reliability)
+  const [confirmDeleteTarget, setConfirmDeleteTarget] = useState<{ teamId: string; teamName: string } | null>(null);
+  const [confirmResetTarget, setConfirmResetTarget] = useState<{ teamId: string; teamName: string } | null>(null);
+  const [showResetAllModal, setShowResetAllModal] = useState<boolean>(false);
+  const [showPurgeDemosModal, setShowPurgeDemosModal] = useState<boolean>(false);
+  const [isDeleting, setIsDeleting] = useState<boolean>(false);
+
+  // Live timer tick & listener matching User Panel
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const updateTimer = () => {
+      setRemainingSec(teamManager.getRemainingSeconds());
+    };
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+    const unsub = teamManager.subscribe(updateTimer);
+    return () => {
+      clearInterval(interval);
+      unsub();
+    };
+  }, [isAuthenticated]);
+
+  const formatTimer = (totalSeconds: number): string => {
+    const mins = Math.floor(totalSeconds / 60);
+    const secs = totalSeconds % 60;
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  };
 
   // Subscribe to real-time teams and eventConfig
   useEffect(() => {
@@ -77,7 +107,11 @@ export const AdminControlCenter: React.FC<AdminControlCenterProps> = ({ teamStat
   const handleAddMinutes = async (mins: number) => {
     soundFx.playKeyTick();
     await teamManager.adminAddMinutes(mins);
-    showNotification(`Adjusted mission timer by ${mins > 0 ? '+' : ''}${mins} minutes.`);
+    const updated = Math.max(5, configuredDuration + mins);
+    setConfiguredDuration(updated);
+    setCustomDurationInput(updated.toString());
+    setRemainingSec(teamManager.getRemainingSeconds());
+    showNotification(`Adjusted mission timer by ${mins > 0 ? '+' : ''}${mins} minutes across all screens.`);
   };
 
   const handleSaveCustomDuration = async (e: React.FormEvent) => {
@@ -92,7 +126,8 @@ export const AdminControlCenter: React.FC<AdminControlCenterProps> = ({ teamStat
     if (ok) {
       soundFx.playFlagSuccess();
       setConfiguredDuration(parsed);
-      showNotification(`Saved authoritative duration (${parsed}m) to Firebase.`);
+      setRemainingSec(teamManager.getRemainingSeconds());
+      showNotification(`Saved authoritative duration (${parsed}m) to Firebase across all screens.`);
     } else {
       soundFx.playFlagError();
       showNotification('Failed to save event duration to Firebase.');
@@ -111,53 +146,69 @@ export const AdminControlCenter: React.FC<AdminControlCenterProps> = ({ teamStat
     showNotification('Unlocked all 15 sectors for current squad.');
   };
 
-  // Reset single team
-  const handleResetSingleTeam = async (targetTeamId: string, teamName: string) => {
-    const confirmed = window.confirm(
-      `Are you sure you want to reset gameplay for team "${teamName}" (${targetTeamId})?\n\nThis clears score, sectors cleared, hints, penalties, and timer while preserving registration accounts.`
-    );
-    if (confirmed) {
-      soundFx.playFlagError();
-      await teamManager.adminResetTeam(targetTeamId);
-      showNotification(`Team "${teamName}" gameplay has been reset.`);
+  // Execution of Delete Single Team
+  const executeDeleteTeam = async () => {
+    if (!confirmDeleteTarget) return;
+    const { teamId: targetId, teamName: targetName } = confirmDeleteTarget;
+    setIsDeleting(true);
+    soundFx.playFlagError();
+
+    try {
+      // Optimistically remove from local state immediately
+      setLiveTeams((prev) => prev.filter((t) => t.teamId !== targetId));
+      const ok = await teamManager.adminDeleteTeam(targetId);
+      if (ok) {
+        showNotification(`Team "${targetName}" (${targetId}) permanently deleted.`);
+      } else {
+        showNotification(`Failed to delete team "${targetName}". Check database connection.`);
+      }
+    } catch (err: any) {
+      showNotification(`Error deleting team: ${err?.message || 'Unknown error'}`);
+    } finally {
+      setIsDeleting(false);
+      setConfirmDeleteTarget(null);
     }
   };
 
-  // Reset ALL teams
-  const handleResetAllTeams = async () => {
-    const confirmed = window.confirm(
-      'Are you sure you want to reset all teams?\n\nThis clears game progress, scores, and completed sectors for all registered squads while preserving team registrations.'
-    );
-    if (confirmed) {
-      soundFx.playFlagError();
+  // Execution of Reset Single Team
+  const executeResetTeam = async () => {
+    if (!confirmResetTarget) return;
+    const { teamId: targetId, teamName: targetName } = confirmResetTarget;
+    soundFx.playFlagError();
+
+    try {
+      await teamManager.adminResetTeam(targetId);
+      showNotification(`Team "${targetName}" (${targetId}) gameplay progress has been reset.`);
+    } catch (err: any) {
+      showNotification(`Error resetting team: ${err?.message || 'Unknown error'}`);
+    } finally {
+      setConfirmResetTarget(null);
+    }
+  };
+
+  // Execution of Reset All Teams
+  const executeResetAllTeams = async () => {
+    soundFx.playFlagError();
+    setShowResetAllModal(false);
+
+    try {
       const count = await teamManager.adminResetAllTeams();
       showNotification(`Reset gameplay state for ${count} squads in Firebase.`);
+    } catch (err: any) {
+      showNotification(`Error resetting all teams: ${err?.message || 'Unknown error'}`);
     }
   };
 
-  // Delete team completely
-  const handleDeleteSingleTeam = async (targetTeamId: string, teamName: string) => {
-    const confirmed = window.confirm(
-      `Are you sure you want to PERMANENTLY DELETE team "${teamName}" (${targetTeamId})?\n\nThis removes the team registration and all associated data completely from Firestore.`
-    );
-    if (confirmed) {
-      soundFx.playFlagError();
-      const ok = await teamManager.adminDeleteTeam(targetTeamId);
-      if (ok) {
-        showNotification(`Team "${teamName}" permanently deleted from Firestore.`);
-      }
-    }
-  };
+  // Execution of Purge Demos
+  const executePurgeDemos = async () => {
+    soundFx.playKeyTick();
+    setShowPurgeDemosModal(false);
 
-  // Purge legacy demo teams
-  const handlePurgeDemos = async () => {
-    const confirmed = window.confirm(
-      'Are you sure you want to purge any old demo/mock squads from Firebase?'
-    );
-    if (confirmed) {
-      soundFx.playKeyTick();
+    try {
       const count = await teamManager.adminPurgeLegacyDemos();
       showNotification(`Purged ${count} legacy demo squads from database.`);
+    } catch (err: any) {
+      showNotification(`Error purging demo squads: ${err?.message || 'Unknown error'}`);
     }
   };
 
@@ -208,22 +259,24 @@ export const AdminControlCenter: React.FC<AdminControlCenterProps> = ({ teamStat
               )}
 
               <div>
-                <label className="block text-xs font-mono text-slate-400 mb-1">
-                  MASTER PASSKEY (Default: OMEGA-OVERRIDE-2026)
+                <label className="block text-xs font-mono text-slate-400 mb-1 flex items-center gap-1.5">
+                  <Lock className="w-3.5 h-3.5 text-red-400" />
+                  <span>MASTER SECURITY PASSKEY</span>
                 </label>
                 <input
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Enter passkey..."
+                  placeholder="Enter security passkey..."
                   required
+                  autoFocus
                   className="w-full bg-slate-900 border border-slate-700 focus:border-red-500 px-3.5 py-2 text-sm font-mono text-white rounded outline-none"
                 />
               </div>
 
               <button
                 type="submit"
-                className="w-full py-2.5 bg-red-600 hover:bg-red-500 text-white font-orbitron font-bold text-xs tracking-widest uppercase rounded cursor-pointer transition-colors"
+                className="w-full py-2.5 bg-red-600 hover:bg-red-500 text-white font-orbitron font-bold text-xs tracking-widest uppercase rounded cursor-pointer transition-colors shadow-[0_0_20px_rgba(239,68,68,0.3)]"
               >
                 AUTHENTICATE
               </button>
@@ -266,8 +319,8 @@ export const AdminControlCenter: React.FC<AdminControlCenterProps> = ({ teamStat
                 </div>
                 <div className="bg-slate-900 px-3 py-1.5 rounded border border-slate-800">
                   <div className="text-slate-500 text-[9px]">TIME REMAINING</div>
-                  <div className="text-yellow-400 font-bold">
-                    {Math.floor(teamManager.getRemainingSeconds() / 60)}m
+                  <div className="text-yellow-400 font-bold font-orbitron tracking-wider">
+                    {formatTimer(remainingSec)}
                   </div>
                 </div>
               </div>
@@ -281,7 +334,7 @@ export const AdminControlCenter: React.FC<AdminControlCenterProps> = ({ teamStat
                   <span className="flex items-center gap-1.5">
                     <Clock className="w-4 h-4 text-cyan-400" /> MISSION TIME SETTINGS
                   </span>
-                  <span className="text-[10px] text-yellow-400">
+                  <span className="text-[10px] text-yellow-400 font-bold">
                     CURRENT: {configuredDuration} MIN
                   </span>
                 </div>
@@ -381,14 +434,14 @@ export const AdminControlCenter: React.FC<AdminControlCenterProps> = ({ teamStat
                   <div className="text-red-400 font-bold uppercase text-[10px]">GLOBAL EVENT CONTROLS</div>
                   <div className="grid grid-cols-2 gap-2">
                     <button
-                      onClick={handleResetAllTeams}
+                      onClick={() => setShowResetAllModal(true)}
                       className="py-1.5 px-2 bg-red-950/70 border border-red-500/50 hover:bg-red-900 text-red-200 font-bold uppercase rounded cursor-pointer flex items-center justify-center gap-1.5"
                     >
                       <RotateCcw className="w-3.5 h-3.5" />
                       <span>RESET ALL TEAMS</span>
                     </button>
                     <button
-                      onClick={handlePurgeDemos}
+                      onClick={() => setShowPurgeDemosModal(true)}
                       className="py-1.5 px-2 bg-slate-900 border border-slate-700 hover:bg-slate-800 text-slate-300 uppercase rounded cursor-pointer flex items-center justify-center gap-1.5 text-[11px]"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
@@ -475,15 +528,17 @@ export const AdminControlCenter: React.FC<AdminControlCenterProps> = ({ teamStat
                             <td className="py-2 text-right">
                               <div className="flex items-center justify-end gap-1.5">
                                 <button
-                                  onClick={() => handleResetSingleTeam(t.teamId, t.teamName)}
-                                  className="px-2 py-0.5 bg-yellow-950/70 border border-yellow-500/40 hover:bg-yellow-900 text-yellow-300 rounded text-[10px] font-bold cursor-pointer transition-colors"
+                                  type="button"
+                                  onClick={() => setConfirmResetTarget({ teamId: t.teamId, teamName: t.teamName })}
+                                  className="px-2.5 py-1 bg-yellow-950/70 border border-yellow-500/50 hover:bg-yellow-900 text-yellow-300 rounded text-[10px] font-bold cursor-pointer transition-colors shadow-sm"
                                   title="Reset gameplay while keeping accounts"
                                 >
                                   RESET
                                 </button>
                                 <button
-                                  onClick={() => handleDeleteSingleTeam(t.teamId, t.teamName)}
-                                  className="px-2 py-0.5 bg-red-950/70 border border-red-500/40 hover:bg-red-900 text-red-300 rounded text-[10px] font-bold cursor-pointer transition-colors"
+                                  type="button"
+                                  onClick={() => setConfirmDeleteTarget({ teamId: t.teamId, teamName: t.teamName })}
+                                  className="px-2.5 py-1 bg-red-950/70 border border-red-500/50 hover:bg-red-900 text-red-300 rounded text-[10px] font-bold cursor-pointer transition-colors shadow-sm"
                                   title="Delete team permanently from database"
                                 >
                                   DELETE
@@ -496,6 +551,168 @@ export const AdminControlCenter: React.FC<AdminControlCenterProps> = ({ teamStat
                     )}
                   </tbody>
                 </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* =========================================================================
+            IN-APP MODAL 1: CONFIRM TEAM DELETION (REPLACES BROKEN window.confirm)
+            ========================================================================= */}
+        {confirmDeleteTarget && (
+          <div className="fixed inset-0 z-[60] bg-black/90 backdrop-blur-md flex items-center justify-center p-4 select-none">
+            <div className="w-full max-w-md bg-slate-950 border border-red-500 rounded-xl p-6 shadow-[0_0_60px_rgba(239,68,68,0.4)] space-y-4 font-mono text-xs animate-in fade-in duration-200">
+              <div className="flex items-center gap-2 text-red-400 font-bold uppercase tracking-wider text-sm">
+                <AlertTriangle className="w-5 h-5 text-red-400 animate-pulse" />
+                <span>CONFIRM PERMANENT DELETION</span>
+              </div>
+
+              <p className="text-slate-300 leading-relaxed">
+                Are you sure you want to permanently delete team{' '}
+                <strong className="text-white font-orbitron text-sm">{confirmDeleteTarget.teamName}</strong>{' '}
+                (<span className="text-yellow-400 font-bold">{confirmDeleteTarget.teamId}</span>)?
+              </p>
+
+              <div className="p-3 bg-red-950/50 border border-red-500/40 rounded-lg text-red-300 text-[11px] leading-relaxed">
+                ⚠️ <span className="font-bold">PERMANENT ACTION:</span> This completely purges the team registration, score, accounts, and telemetry from Firestore. This cannot be undone.
+              </div>
+
+              <div className="flex justify-end gap-2.5 pt-2">
+                <button
+                  type="button"
+                  disabled={isDeleting}
+                  onClick={() => setConfirmDeleteTarget(null)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded-lg cursor-pointer transition-colors"
+                >
+                  CANCEL
+                </button>
+                <button
+                  type="button"
+                  disabled={isDeleting}
+                  onClick={executeDeleteTeam}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white font-bold uppercase rounded-lg cursor-pointer transition-colors flex items-center gap-1.5 shadow-[0_0_20px_rgba(239,68,68,0.5)] disabled:opacity-50"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>{isDeleting ? 'DELETING...' : 'DELETE SQUAD'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* =========================================================================
+            IN-APP MODAL 2: CONFIRM TEAM RESET
+            ========================================================================= */}
+        {confirmResetTarget && (
+          <div className="fixed inset-0 z-[60] bg-black/90 backdrop-blur-md flex items-center justify-center p-4 select-none">
+            <div className="w-full max-w-md bg-slate-950 border border-yellow-500 rounded-xl p-6 shadow-[0_0_60px_rgba(234,179,8,0.3)] space-y-4 font-mono text-xs animate-in fade-in duration-200">
+              <div className="flex items-center gap-2 text-yellow-400 font-bold uppercase tracking-wider text-sm">
+                <RotateCcw className="w-5 h-5 text-yellow-400" />
+                <span>CONFIRM GAMEPLAY RESET</span>
+              </div>
+
+              <p className="text-slate-300 leading-relaxed">
+                Are you sure you want to reset gameplay for team{' '}
+                <strong className="text-white font-orbitron text-sm">{confirmResetTarget.teamName}</strong>{' '}
+                (<span className="text-yellow-400 font-bold">{confirmResetTarget.teamId}</span>)?
+              </p>
+
+              <div className="p-3 bg-yellow-950/40 border border-yellow-500/40 rounded-lg text-yellow-300 text-[11px] leading-relaxed">
+                ℹ️ <span className="font-bold">GAMEPLAY RESET:</span> Clears score (0 XP), completed sectors, hints used, and timer. Team registration, usernames, and authentication accounts remain intact.
+              </div>
+
+              <div className="flex justify-end gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setConfirmResetTarget(null)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded-lg cursor-pointer transition-colors"
+                >
+                  CANCEL
+                </button>
+                <button
+                  type="button"
+                  onClick={executeResetTeam}
+                  className="px-4 py-2 bg-yellow-500 hover:bg-yellow-400 text-black font-bold uppercase rounded-lg cursor-pointer transition-colors flex items-center gap-1.5 shadow-[0_0_20px_rgba(234,179,8,0.4)]"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  <span>RESET PROGRESS</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* =========================================================================
+            IN-APP MODAL 3: CONFIRM RESET ALL TEAMS
+            ========================================================================= */}
+        {showResetAllModal && (
+          <div className="fixed inset-0 z-[60] bg-black/90 backdrop-blur-md flex items-center justify-center p-4 select-none">
+            <div className="w-full max-w-md bg-slate-950 border border-red-500 rounded-xl p-6 shadow-[0_0_60px_rgba(239,68,68,0.4)] space-y-4 font-mono text-xs animate-in fade-in duration-200">
+              <div className="flex items-center gap-2 text-red-400 font-bold uppercase tracking-wider text-sm">
+                <RotateCcw className="w-5 h-5 text-red-400 animate-spin" />
+                <span>CONFIRM RESET ALL SQUADS</span>
+              </div>
+
+              <p className="text-slate-300 leading-relaxed">
+                Are you sure you want to reset gameplay progress for <strong className="text-white">ALL registered teams</strong> in Firebase?
+              </p>
+
+              <div className="p-3 bg-red-950/50 border border-red-500/40 rounded-lg text-red-300 text-[11px] leading-relaxed">
+                ⚠️ This resets all squads' scores to 0, clears all solves, and restarts their status while preserving team registrations and operative credentials.
+              </div>
+
+              <div className="flex justify-end gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowResetAllModal(false)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded-lg cursor-pointer transition-colors"
+                >
+                  CANCEL
+                </button>
+                <button
+                  type="button"
+                  onClick={executeResetAllTeams}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white font-bold uppercase rounded-lg cursor-pointer transition-colors flex items-center gap-1.5 shadow-[0_0_20px_rgba(239,68,68,0.5)]"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  <span>RESET ALL TEAMS</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* =========================================================================
+            IN-APP MODAL 4: CONFIRM PURGE DEMO SQUADS
+            ========================================================================= */}
+        {showPurgeDemosModal && (
+          <div className="fixed inset-0 z-[60] bg-black/90 backdrop-blur-md flex items-center justify-center p-4 select-none">
+            <div className="w-full max-w-md bg-slate-950 border border-cyan-500 rounded-xl p-6 shadow-[0_0_60px_rgba(6,182,212,0.3)] space-y-4 font-mono text-xs animate-in fade-in duration-200">
+              <div className="flex items-center gap-2 text-cyan-400 font-bold uppercase tracking-wider text-sm">
+                <Trash2 className="w-5 h-5 text-cyan-400" />
+                <span>PURGE LEGACY DEMO SQUADS</span>
+              </div>
+
+              <p className="text-slate-300 leading-relaxed">
+                Scan Firestore and purge any remaining legacy demo squads (e.g. OMEGA-017 / CYBER VANGUARD)?
+              </p>
+
+              <div className="flex justify-end gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowPurgeDemosModal(false)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded-lg cursor-pointer transition-colors"
+                >
+                  CANCEL
+                </button>
+                <button
+                  type="button"
+                  onClick={executePurgeDemos}
+                  className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-black font-bold uppercase rounded-lg cursor-pointer transition-colors flex items-center gap-1.5 shadow-[0_0_20px_rgba(6,182,212,0.4)]"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>PURGE DEMOS</span>
+                </button>
               </div>
             </div>
           </div>

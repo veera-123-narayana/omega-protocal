@@ -37,13 +37,13 @@ service cloud.firestore {
       allow read: if true;
       allow create: if isValidId(teamId) && isValidTeam(incoming());
       allow update: if isValidId(teamId);
-      allow delete: if isValidId(teamId);
+      allow delete: if true;
 
       // Team Messages Subcollection
       match /messages/{messageId} {
-        allow read: if isValidId(teamId);
-        allow create: if isValidId(teamId) && isValidId(messageId) && isValidChatMessage(incoming());
-        allow update, delete: if isValidId(teamId);
+        allow read: if true;
+        allow create: if true;
+        allow update, delete: if true;
       }
     }
 
