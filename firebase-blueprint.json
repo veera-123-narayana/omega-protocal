@@ -35,6 +35,18 @@
         "lastSolvedAt": {
           "type": "number",
           "description": "Timestamp of most recent sector solve"
+        },
+        "completedSectors": {
+          "type": "array",
+          "description": "Team-wide synchronized list of solved level identifiers"
+        },
+        "solvedFlags": {
+          "type": "object",
+          "description": "Team-wide solved flags mapped by sector identifier"
+        },
+        "omegaCoreSolved": {
+          "type": "boolean",
+          "description": "True when the final Level 15 Omega Core has been validated"
         }
       },
       "required": ["teamId", "teamName", "score", "status"]

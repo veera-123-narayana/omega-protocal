@@ -140,6 +140,8 @@ export async function createTeamInFirestore(payload: CreateTeamPayload): Promise
       secondOperativePasswordHash: op2Hash,
       score: 0,
       completedSectors: [],
+      solvedFlags: {},
+      omegaCoreSolved: false,
       unlockedSectors: ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14', '15'],
       activeSectorId: '01',
       status: 'WAITING',
@@ -468,7 +470,8 @@ export async function recordSolveInFirebase(
   unlockedSectors: string[],
   speedBonusDelta: number,
   firstBloodBonusDelta: number,
-  submission: SubmissionRecord
+  submission: SubmissionRecord,
+  solvedFlagToken?: string
 ): Promise<{ success: boolean; alreadySolved?: boolean; newScore?: number; completedSectors?: string[] }> {
   try {
     const teamRef = doc(db, 'teams', teamId);
@@ -481,9 +484,12 @@ export async function recordSolveInFirebase(
 
       const data = snap.data();
       const currentCompleted: string[] = Array.isArray(data.completedSectors) ? data.completedSectors : [];
+      const num = sectorId.replace(/^level-/, '');
+      const padded = num.padStart(2, '0');
+      const isCompletedOmega = padded === '15';
 
       // Check if already completed by any teammate
-      if (isSectorSolved(currentCompleted, sectorId)) {
+      if (isSectorSolved(currentCompleted, sectorId) || (isCompletedOmega && data.omegaCoreSolved)) {
         return {
           alreadySolved: true,
           currentScore: data.score || 0,
@@ -491,19 +497,27 @@ export async function recordSolveInFirebase(
         };
       }
 
-      const num = sectorId.replace(/^level-/, '');
-      const padded = num.padStart(2, '0');
       const levelPadded = `level-${padded}`;
       const totalGained = baseXp + bonusXp;
       const newScore = (data.score || 0) + totalGained;
       const updatedCompleted = Array.from(new Set([...currentCompleted, padded, levelPadded]));
-      const isCompletedOmega = padded === '15';
+
+      const existingSolvedFlags = data.solvedFlags || {};
+      const updatedSolvedFlags = {
+        ...existingSolvedFlags,
+        ...(solvedFlagToken ? {
+          [`level-${padded}`]: solvedFlagToken,
+          [padded]: solvedFlagToken,
+        } : {}),
+      };
 
       transaction.update(teamRef, {
         completedSectors: updatedCompleted,
         score: newScore,
         unlockedSectors,
         lastSolvedAt: solveTimestamp,
+        solvedFlags: updatedSolvedFlags,
+        omegaCoreSolved: isCompletedOmega ? true : Boolean(data.omegaCoreSolved),
         speedBonus: (data.speedBonus || 0) + speedBonusDelta,
         firstBloodBonus: (data.firstBloodBonus || 0) + firstBloodBonusDelta,
         status: isCompletedOmega ? 'completed' : (data.status === 'WAITING' ? 'active' : data.status || 'active'),
@@ -533,11 +547,17 @@ export async function recordSolveInFirebase(
       const padded = num.padStart(2, '0');
       const levelPadded = `level-${padded}`;
       const totalGained = baseXp + bonusXp;
+      const isCompletedOmega = padded === '15';
 
       await updateDoc(teamRef, {
         completedSectors: arrayUnion(padded, levelPadded),
         score: increment(totalGained),
         lastSolvedAt: solveTimestamp,
+        ...(solvedFlagToken ? {
+          [`solvedFlags.level-${padded}`]: solvedFlagToken,
+          [`solvedFlags.${padded}`]: solvedFlagToken,
+        } : {}),
+        ...(isCompletedOmega ? { omegaCoreSolved: true, status: 'completed', completedAt: solveTimestamp } : {}),
         submissions: arrayUnion(submission),
         updatedAt: serverTimestamp(),
       });
@@ -559,6 +579,8 @@ export async function resetSingleTeamInFirebase(teamId: string): Promise<boolean
     await updateDoc(teamRef, {
       score: 0,
       completedSectors: [],
+      solvedFlags: {},
+      omegaCoreSolved: false,
       unlockedSectors: ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14', '15'],
       activeSectorId: '01',
       hintsUsed: {},
@@ -599,6 +621,8 @@ export async function resetAllTeamsInFirebase(): Promise<number> {
       await updateDoc(docSnap.ref, {
         score: 0,
         completedSectors: [],
+        solvedFlags: {},
+        omegaCoreSolved: false,
         unlockedSectors: ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14', '15'],
         activeSectorId: '01',
         hintsUsed: {},

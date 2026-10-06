@@ -64,6 +64,8 @@ export interface TeamState {
   aiViolations: number;
   completedAt: number | null;
   chatMessages: ChatMessage[];
+  solvedFlags?: Record<string, string>;
+  omegaCoreSolved?: boolean;
 }
 
 export type SectorCategory = 

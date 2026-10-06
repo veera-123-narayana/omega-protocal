@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { SectorDefinition, TeamState, OperativeRole } from '../../types';
 import { teamManager } from '../../services/teamService';
 import { soundFx } from '../../utils/audio';
-import { isSectorSolved } from '../../utils/validation';
+import { isSectorSolved, areAllPrecedingSectorsSolved } from '../../utils/validation';
 import {
   DnsBlackoutChallenge,
   WhoIsTheOperativeChallenge,
@@ -58,6 +58,8 @@ export const SectorWorkspace: React.FC<SectorWorkspaceProps> = ({
 
   const isCompleted = isSectorSolved(teamState.completedSectors, sector.id);
   const hintsUsedCount = teamState.hintsUsed[sector.id] || 0;
+  const isOmegaCore = sector.id === '15';
+  const isPrecedingReady = isOmegaCore ? areAllPrecedingSectorsSolved(teamState.completedSectors) : true;
 
   const currentOperativeName =
     currentRole === 'OPERATIVE_A'
@@ -333,15 +335,21 @@ export const SectorWorkspace: React.FC<SectorWorkspaceProps> = ({
                   type="text"
                   value={flagInput}
                   onChange={(e) => setFlagInput(e.target.value)}
-                  disabled={isCompleted || isSubmitting}
-                  placeholder="ENTER DISCOVERED FLAG OR TOKEN: e.g. OMEGA{...} or raw token"
-                  className="w-full bg-slate-900 border border-slate-700 focus:border-cyan-400 pl-4 pr-20 py-3 rounded font-mono text-sm text-cyan-200 outline-none placeholder:text-slate-600"
+                  disabled={isCompleted || isSubmitting || (isOmegaCore && !isPrecedingReady)}
+                  placeholder={
+                    isOmegaCore && !isPrecedingReady
+                      ? 'LOCKED: REQUIRES ALL 14 PRECEDING SECTORS TO BE SOLVED FIRST'
+                      : isOmegaCore
+                      ? 'ENTER 14-CHARACTER MASTER CIPHER (L01[0] + L02[0] + ... + L14[0])'
+                      : 'ENTER DISCOVERED FLAG OR TOKEN: e.g. OMEGA{...} or raw token'
+                  }
+                  className="w-full bg-slate-900 border border-slate-700 focus:border-cyan-400 pl-4 pr-20 py-3 rounded font-mono text-sm text-cyan-200 outline-none placeholder:text-slate-600 disabled:opacity-50"
                 />
                 <button
                   type="button"
                   onClick={handlePaste}
-                  disabled={isCompleted || isSubmitting}
-                  className="absolute right-2 px-2.5 py-1 text-[11px] font-mono bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded border border-slate-700 cursor-pointer transition-colors"
+                  disabled={isCompleted || isSubmitting || (isOmegaCore && !isPrecedingReady)}
+                  className="absolute right-2 px-2.5 py-1 text-[11px] font-mono bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded border border-slate-700 cursor-pointer transition-colors disabled:opacity-50"
                   title="Paste from clipboard"
                 >
                   PASTE
@@ -350,15 +358,25 @@ export const SectorWorkspace: React.FC<SectorWorkspaceProps> = ({
 
               <button
                 type="submit"
-                disabled={isCompleted || isSubmitting || !flagInput.trim()}
+                disabled={isCompleted || isSubmitting || !flagInput.trim() || (isOmegaCore && !isPrecedingReady)}
                 className={`w-full sm:w-auto px-6 py-3 font-orbitron font-bold text-xs tracking-widest uppercase rounded transition-all cursor-pointer flex items-center justify-center gap-2 ${
                   isCompleted
                     ? 'bg-emerald-600 text-white opacity-70 cursor-not-allowed'
+                    : isOmegaCore && !isPrecedingReady
+                    ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
                     : 'bg-cyan-500 hover:bg-cyan-400 text-black shadow-[0_0_15px_rgba(6,182,212,0.4)]'
                 }`}
               >
                 <Send className="w-3.5 h-3.5" />
-                <span>{isCompleted ? 'SECTOR SOLVED' : 'SUBMIT FLAG'}</span>
+                <span>
+                  {isCompleted
+                    ? (isOmegaCore ? 'OMEGA CORE SECURED ✓' : 'SECTOR SOLVED')
+                    : isOmegaCore && !isPrecedingReady
+                    ? 'OMEGA CORE LOCKED'
+                    : isOmegaCore
+                    ? 'TRANSMIT MASTER CIPHER'
+                    : 'SUBMIT FLAG'}
+                </span>
               </button>
             </div>
 
@@ -377,7 +395,11 @@ export const SectorWorkspace: React.FC<SectorWorkspaceProps> = ({
             )}
 
             <div className="flex items-center justify-between text-[11px] font-mono text-slate-500 pt-1">
-              <span>ACCEPT: OMEGA&#123;...&#125; or raw token (case & format tolerant)</span>
+              <span>
+                {isOmegaCore
+                  ? 'STRICT 14-CHARACTER CIPHER: L01[0] THROUGH L14[0]'
+                  : 'ACCEPT: OMEGA{...} or raw token (case & format tolerant)'}
+              </span>
               <span>WRONG SUBMISSION: -10 XP PENALTY</span>
             </div>
           </form>

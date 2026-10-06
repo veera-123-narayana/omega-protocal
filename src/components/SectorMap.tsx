@@ -3,7 +3,7 @@ import { SECTORS } from '../data/sectors';
 import { TeamState, SectorDefinition } from '../types';
 import { teamManager } from '../services/teamService';
 import { soundFx } from '../utils/audio';
-import { isSectorSolved } from '../utils/validation';
+import { isSectorSolved, areAllPrecedingSectorsSolved } from '../utils/validation';
 import { Lock, CheckCircle2, Zap, Shield, ChevronRight } from 'lucide-react';
 
 interface SectorMapProps {
@@ -141,9 +141,9 @@ export const SectorMap: React.FC<SectorMapProps> = ({ teamState, onSelectSector 
                     <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 mt-2 pt-2 border-t border-slate-800/60">
                       <span className="truncate max-w-[130px]">{sector.category}</span>
                       <span className={`text-[10px] uppercase font-semibold ${
-                        completed ? 'text-emerald-400 font-bold' : active ? 'text-cyan-300 font-bold' : 'text-slate-400'
+                        completed ? 'text-emerald-400 font-bold' : active ? 'text-cyan-300 font-bold' : isOmegaCore && !areAllPrecedingSectorsSolved(teamState.completedSectors) ? 'text-amber-500' : 'text-slate-400'
                       }`}>
-                        {completed ? 'CLEARED ✓' : active ? 'ACTIVE NOW' : 'READY TO PLAY'}
+                        {completed ? 'CLEARED ✓' : active ? 'ACTIVE NOW' : isOmegaCore && !areAllPrecedingSectorsSolved(teamState.completedSectors) ? 'REQUIRES L01-L14' : 'READY TO PLAY'}
                       </span>
                     </div>
 

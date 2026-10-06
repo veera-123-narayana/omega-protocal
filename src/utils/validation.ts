@@ -163,6 +163,8 @@ export interface ValidationResult {
   xpDelta: number;
   speedBonusAwarded: number;
   firstBloodAwarded: boolean;
+  canonicalToken?: string;
+  alreadySolved?: boolean;
 }
 
 /**
@@ -222,7 +224,8 @@ export async function validateSectorFlag(
   sectorId: string,
   submittedFlag: string,
   elapsedMinutes: number,
-  isFirstBlood: boolean = false
+  isFirstBlood: boolean = false,
+  teamSolvedFlags?: Record<string, string>
 ): Promise<ValidationResult> {
   const clean = submittedFlag.trim();
 
@@ -236,7 +239,60 @@ export async function validateSectorFlag(
     };
   }
 
-  const validTargets = CANONICAL_SECTOR_TOKENS[sectorId] || [];
+  const num = sectorId.replace(/^level-/, '').padStart(2, '0');
+
+  // SPECIAL HANDLING: LEVEL 15 — OMEGA CORE
+  if (num === '15') {
+    // STRICT 14-CHARACTER REQUIREMENT
+    if (clean.length !== 14) {
+      return {
+        isCorrect: false,
+        message: `ACCESS DENIED: OMEGA CORE MASTER FLAG MUST BE EXACTLY 14 CHARACTERS (CURRENT LENGTH: ${clean.length}).`,
+        xpDelta: -10,
+        speedBonusAwarded: 0,
+        firstBloodAwarded: false,
+      };
+    }
+
+    // Assemble expected 14-character master flag from Level 01 to 14
+    let expectedMasterFlag = '';
+    for (let i = 1; i <= 14; i++) {
+      const pad = String(i).padStart(2, '0');
+      const token = teamSolvedFlags?.[`level-${pad}`] || teamSolvedFlags?.[pad] || CANONICAL_SECTOR_TOKENS[pad]?.[0] || '';
+      expectedMasterFlag += token.charAt(0);
+    }
+
+    const inputLower = clean.toLowerCase();
+    const expectedLower = expectedMasterFlag.toLowerCase();
+
+    // Check direct match or canonical variants (e.g. level 13 '4' vs 'a', level 8 'c' vs 'p')
+    const isDirectMatch = inputLower === expectedLower;
+    const isCanonicalMatch =
+      inputLower === 'dvpsmwscmip4as' ||
+      inputLower === 'dvpsmwscmipaas' ||
+      inputLower === 'dvpsmwspmip4as';
+
+    if (isDirectMatch || isCanonicalMatch) {
+      return {
+        isCorrect: true,
+        message: 'OMEGA CORE PURIFIED! MASTER 14-CHARACTER MATRIX ALIGNED (+500 XP). OMEGA PROTOCOL SECURED!',
+        xpDelta: 500,
+        speedBonusAwarded: 0,
+        firstBloodAwarded: false,
+        canonicalToken: 'c0r3_unl0ck3d_syst3m_0m3g4_purif13d',
+      };
+    } else {
+      return {
+        isCorrect: false,
+        message: 'ACCESS DENIED: INCORRECT 14-CHARACTER MASTER CIPHER (-10 XP). CHECK EXTRACTION SEQUENCE (01 -> 14).',
+        xpDelta: -10,
+        speedBonusAwarded: 0,
+        firstBloodAwarded: false,
+      };
+    }
+  }
+
+  const validTargets = CANONICAL_SECTOR_TOKENS[num] || CANONICAL_SECTOR_TOKENS[sectorId] || [];
   const normalizedTargets = new Set<string>();
 
   for (const t of validTargets) {
@@ -295,6 +351,7 @@ export async function validateSectorFlag(
   }
 
   const firstBloodBonus = isFirstBlood ? 25 : 0;
+  const canonicalToken = validTargets[0] || clean;
 
   return {
     isCorrect: true,
@@ -302,6 +359,7 @@ export async function validateSectorFlag(
     xpDelta: speedBonus + firstBloodBonus,
     speedBonusAwarded: speedBonus,
     firstBloodAwarded: isFirstBlood,
+    canonicalToken,
   };
 }
 
@@ -336,4 +394,18 @@ export function getSolvedSectorsCount(completedSectors: string[] | undefined): n
     }
   }
   return unique.size;
+}
+
+/**
+ * Returns true if all 14 sectors prior to Omega Core have been solved by the squad.
+ */
+export function areAllPrecedingSectorsSolved(completedSectors: string[] | undefined): boolean {
+  if (!completedSectors || !Array.isArray(completedSectors)) return false;
+  for (let i = 1; i <= 14; i++) {
+    const pad = String(i).padStart(2, '0');
+    if (!isSectorSolved(completedSectors, pad)) {
+      return false;
+    }
+  }
+  return true;
 }

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { SectorDefinition, TeamState } from '../../types';
 import { soundFx } from '../../utils/audio';
+import { isSectorSolved, areAllPrecedingSectorsSolved } from '../../utils/validation';
 import {
   Terminal,
   Play,
@@ -1933,6 +1934,16 @@ export const OmegaCoreChallenge: React.FC<ChallengeProps> = ({ teamState }) => {
     { label: 'AGENT FRAGMENT', code: 'VERIFIER-RAG-01', sector: '13' },
   ];
 
+  // 14 Preceding Sectors (Level 01 to Level 14) in Strict Level Order
+  const sectorKeyList = Array.from({ length: 14 }, (_, i) => {
+    const pad = String(i + 1).padStart(2, '0');
+    const isSolved = isSectorSolved(teamState.completedSectors, pad);
+    return { pad, isSolved };
+  });
+
+  const all14Solved = sectorKeyList.every((s) => s.isSolved);
+  const solvedCount = sectorKeyList.filter((s) => s.isSolved).length;
+
   return (
     <div className="bg-slate-900/90 border border-red-500/60 rounded-lg p-5 font-mono text-xs space-y-4">
       <div className="flex items-center justify-between pb-3 border-b border-red-900/50">
@@ -1943,13 +1954,55 @@ export const OmegaCoreChallenge: React.FC<ChallengeProps> = ({ teamState }) => {
       </div>
 
       <p className="text-slate-300">
-        All 6 core cryptographic fragments must be unified into the master reactor containment ring to unlock the OMEGA CORE.
+        All 14 preceding sectors produce one valid key flag. The first character of each flag in strict level order (01 → 14) forms the 14-character OMEGA CORE master cipher.
       </p>
+
+      {/* 14 Key Fragment Sequence Display (Level Order 01 to 14) */}
+      <div className="p-3 bg-black/60 border border-slate-800 rounded space-y-2">
+        <div className="flex items-center justify-between text-[11px] pb-1 border-b border-slate-800">
+          <span className="text-cyan-400 font-bold tracking-wider">
+            KEY EXTRACTION MATRIX (LEVEL 01 → 14 ORDER)
+          </span>
+          <span className={all14Solved ? 'text-emerald-400 font-bold' : 'text-amber-400'}>
+            {solvedCount} / 14 KEY FRAGMENTS COLLECTED
+          </span>
+        </div>
+
+        <div className="grid grid-cols-7 sm:grid-cols-14 gap-1.5 pt-1">
+          {sectorKeyList.map(({ pad, isSolved }) => (
+            <div
+              key={pad}
+              className={`flex flex-col items-center justify-center p-2 rounded border text-center transition-all ${
+                isSolved
+                  ? 'bg-cyan-950/50 border-cyan-400/60 text-cyan-200 shadow-[0_0_10px_rgba(6,182,212,0.3)]'
+                  : 'bg-black/50 border-slate-800/80 text-slate-600'
+              }`}
+            >
+              <span className="text-[10px] font-mono font-bold text-slate-300">{pad}</span>
+              <span className={`text-base leading-none mt-1 ${isSolved ? 'text-emerald-400 animate-pulse' : 'text-slate-700'}`}>
+                ●
+              </span>
+            </div>
+          ))}
+        </div>
+
+        <div className="text-[10px] text-slate-400 pt-1">
+          {all14Solved ? (
+            <span className="text-emerald-300">
+              ✓ ALL 14 LEVEL KEY CHARACTERS SECURED BY SQUAD! SYNTHESIZE & ENTER THE 14-CHARACTER CIPHER BELOW.
+            </span>
+          ) : (
+            <span className="text-amber-400/90">
+              ⚠ {14 - solvedCount} SECTORS REMAINING. BOTH OPERATIVES CAN WORK CONCURRENTLY TO SECURE MISSING LEVELS.
+            </span>
+          )}
+        </div>
+      </div>
 
       {/* Fragment Matrix */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
         {fragments.map((frag, idx) => {
-          const isCollected = teamState.completedSectors.includes(frag.sector) || coreAligned;
+          const isCollected = isSectorSolved(teamState.completedSectors, frag.sector) || coreAligned;
           return (
             <div
               key={idx}
@@ -1968,23 +2021,28 @@ export const OmegaCoreChallenge: React.FC<ChallengeProps> = ({ teamState }) => {
 
       <button
         type="button"
+        disabled={!all14Solved}
         onClick={() => {
           soundFx.playFlagSuccess();
           soundFx.playLandingImpact();
           setCoreAligned(true);
         }}
-        className="w-full py-3 bg-gradient-to-r from-red-600 via-cyan-500 to-emerald-500 text-black font-orbitron font-extrabold text-xs tracking-widest uppercase rounded cursor-pointer shadow-[0_0_25px_rgba(6,182,212,0.4)]"
+        className={`w-full py-3 font-orbitron font-extrabold text-xs tracking-widest uppercase rounded transition-all cursor-pointer ${
+          all14Solved
+            ? 'bg-gradient-to-r from-red-600 via-cyan-500 to-emerald-500 text-black shadow-[0_0_25px_rgba(6,182,212,0.4)] hover:brightness-110'
+            : 'bg-slate-900 text-slate-600 border border-slate-800 cursor-not-allowed opacity-60'
+        }`}
       >
-        SYNCHRONIZE & IGNITE OMEGA CORE
+        {all14Solved ? 'SYNCHRONIZE & IGNITE OMEGA CORE' : 'REACTOR LOCKED // AWAITING 14 SECTOR KEYS'}
       </button>
 
-      {coreAligned && (
+      {(coreAligned || teamState.omegaCoreSolved) && (
         <div className="p-4 bg-emerald-950/50 border border-emerald-400 rounded space-y-2 animate-fade-in">
           <div className="font-orbitron font-black text-emerald-300 text-base tracking-widest">
             OMEGA CORE RECONNECTED!
           </div>
           <div className="text-xs text-slate-300 mt-1">
-            All containment matrix rings aligned. Enter your final master purified core key below.
+            All containment matrix rings aligned. Enter your final 14-character master purified core key below.
           </div>
         </div>
       )}

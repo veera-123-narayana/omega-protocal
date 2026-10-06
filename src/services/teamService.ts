@@ -6,7 +6,7 @@ import {
   ChatMessage,
 } from '../types';
 import { SECTORS } from '../data/sectors';
-import { validateSectorFlag, isSectorSolved, getSolvedSectorsCount } from '../utils/validation';
+import { validateSectorFlag, isSectorSolved, getSolvedSectorsCount, areAllPrecedingSectorsSolved } from '../utils/validation';
 import {
   createTeamInFirestore,
   authenticateJoinTeam,
@@ -26,7 +26,7 @@ import {
   CreateTeamPayload,
   EventConfigPayload,
 } from './firebaseService';
-import { Unsubscribe } from 'firebase/firestore';
+import { Unsubscribe, arrayUnion, increment } from 'firebase/firestore';
 
 const STORAGE_KEY = 'system_omega_team_state_v2';
 const BROADCAST_CHANNEL_NAME = 'system_omega_sync_channel';
@@ -55,6 +55,8 @@ export function createEmptyTeamState(): TeamState {
     lastSolvedAt: null,
     score: 0,
     completedSectors: [],
+    solvedFlags: {},
+    omegaCoreSolved: false,
     unlockedSectors: ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14', '15'],
     activeSectorId: '01',
     hintsUsed: {},
@@ -180,6 +182,12 @@ class TeamManager {
   }
 
   private notify() {
+    this.state = {
+      ...this.state,
+      completedSectors: [...this.state.completedSectors],
+      unlockedSectors: [...this.state.unlockedSectors],
+      solvedFlags: { ...(this.state.solvedFlags || {}) },
+    };
     this.listeners.forEach((listener) => listener(this.state));
   }
 
@@ -217,6 +225,8 @@ class TeamManager {
       this.state.missionEndAt = teamDoc.missionEndAt ?? null;
       this.state.lastSolvedAt = teamDoc.lastSolvedAt ?? null;
       this.state.completedSectors = Array.isArray(teamDoc.completedSectors) ? teamDoc.completedSectors : [];
+      this.state.solvedFlags = teamDoc.solvedFlags || {};
+      this.state.omegaCoreSolved = Boolean(teamDoc.omegaCoreSolved);
       this.state.unlockedSectors = Array.isArray(teamDoc.unlockedSectors) && teamDoc.unlockedSectors.length > 0
         ? teamDoc.unlockedSectors
         : ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14', '15'];
@@ -385,6 +395,8 @@ class TeamManager {
       status: docData.status || 'WAITING',
       score: docData.score || 0,
       completedSectors: docData.completedSectors || [],
+      solvedFlags: docData.solvedFlags || {},
+      omegaCoreSolved: Boolean(docData.omegaCoreSolved),
       unlockedSectors: docData.unlockedSectors || ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14', '15'],
       missionStartedAt: docData.missionStartedAt || null,
       missionEndAt: docData.missionEndAt || null,
@@ -513,18 +525,84 @@ class TeamManager {
     flag: string,
     operativeName: string
   ): Promise<{ success: boolean; message: string; xpDelta: number }> {
-    if (isSectorSolved(this.state.completedSectors, sectorId)) {
+    const num = sectorId.replace(/^level-/, '');
+    const padded = num.padStart(2, '0');
+
+    // 1. Prevent duplicate solves
+    if (isSectorSolved(this.state.completedSectors, sectorId) || (padded === '15' && this.state.omegaCoreSolved)) {
       return { success: false, message: 'SECTOR ALREADY COMPLETED BY SQUAD.', xpDelta: 0 };
+    }
+
+    // 2. Omega Core prerequisites verification (Must complete 01-14)
+    if (padded === '15') {
+      if (!areAllPrecedingSectorsSolved(this.state.completedSectors)) {
+        return {
+          success: false,
+          message: 'OMEGA CORE LOCKED: ALL 14 PRECEDING SECTORS (01-14) MUST BE COMPLETED FIRST.',
+          xpDelta: 0,
+        };
+      }
+
+      // STRICT 14-CHARACTER REQUIREMENT
+      if (flag.trim().length !== 14) {
+        return {
+          success: false,
+          message: `ACCESS DENIED: OMEGA CORE MASTER FLAG MUST BE EXACTLY 14 CHARACTERS (CURRENT LENGTH: ${flag.trim().length}).`,
+          xpDelta: -10,
+        };
+      }
+
+      // Try server-side authoritative validation
+      try {
+        const res = await fetch('/api/validate-omega-core', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            teamId: this.state.teamId,
+            submittedFlag: flag.trim(),
+            operativeName,
+          }),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          if (data.isCorrect) {
+            this.state.omegaCoreSolved = true;
+            this.state.status = 'completed';
+            this.saveToStorage();
+            this.notify();
+            return {
+              success: true,
+              message: data.message,
+              xpDelta: data.xpDelta || 500,
+            };
+          } else {
+            return {
+              success: false,
+              message: data.message,
+              xpDelta: data.xpDelta || -10,
+            };
+          }
+        }
+      } catch (e) {
+        console.warn('Server-side validate-omega-core fetch unavailable, using internal validation:', e);
+      }
     }
 
     const elapsedMin = this.state.missionStartedAt
       ? Math.floor((Date.now() - this.state.missionStartedAt) / 60000)
       : 0;
 
-    const sector = SECTORS.find((s) => s.id === sectorId);
+    const sector = SECTORS.find((s) => s.id === sectorId || s.id === padded);
     const baseXp = sector ? sector.baseXp : 100;
 
-    const validation = await validateSectorFlag(sectorId, flag, elapsedMin, this.state.completedSectors.length === 0);
+    const validation = await validateSectorFlag(
+      sectorId,
+      flag,
+      elapsedMin,
+      this.state.completedSectors.length === 0,
+      this.state.solvedFlags
+    );
 
     const record: SubmissionRecord = {
       id: `sub-${Date.now()}`,
@@ -540,8 +618,6 @@ class TeamManager {
 
     if (validation.isCorrect) {
       const solveTime = Date.now();
-      const num = sectorId.replace(/^level-/, '');
-      const padded = num.padStart(2, '0');
       const levelPadded = `level-${padded}`;
       const gained = baseXp + validation.xpDelta;
       const newScore = this.state.score + gained;
@@ -568,7 +644,16 @@ class TeamManager {
       this.state.firstBloodBonus = newFirstBlood;
       this.state.lastSolvedAt = solveTime;
 
+      if (validation.canonicalToken) {
+        this.state.solvedFlags = {
+          ...this.state.solvedFlags,
+          [`level-${padded}`]: validation.canonicalToken,
+          [padded]: validation.canonicalToken,
+        };
+      }
+
       if (padded === '15') {
+        this.state.omegaCoreSolved = true;
         this.state.status = 'completed';
         this.state.completedAt = solveTime;
       }
@@ -586,7 +671,8 @@ class TeamManager {
           updatedUnlocked,
           validation.speedBonusAwarded,
           validation.firstBloodAwarded ? 25 : 0,
-          record
+          record,
+          validation.canonicalToken
         );
 
         if (firestoreRes.alreadySolved) {
@@ -609,8 +695,8 @@ class TeamManager {
 
       if (this.state.teamId) {
         await updateTeamInFirebase(this.state.teamId, {
-          score: newScore,
-          penalties: newPenalties,
+          score: increment(-10),
+          penalties: increment(10),
           submissions: arrayUnion(record),
         });
       }
