@@ -1,0 +1,75 @@
+{
+  "entities": {
+    "Team": {
+      "title": "Team",
+      "description": "Squad details, operative credentials, score, and authoritative timer state",
+      "type": "object",
+      "properties": {
+        "teamId": {
+          "type": "string",
+          "description": "Unique squad identifier e.g. OMEGA-017",
+          "maxLength": 64
+        },
+        "teamName": {
+          "type": "string",
+          "description": "Display squad name",
+          "maxLength": 100
+        },
+        "score": {
+          "type": "number",
+          "description": "Accumulated tournament score in XP"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["idle", "lobby", "countdown", "active", "completed", "failed"],
+          "description": "Current state of the escape room mission"
+        },
+        "missionStartedAt": {
+          "type": "number",
+          "description": "Server epoch timestamp when 105m countdown began"
+        }
+      },
+      "required": ["teamId", "teamName", "score", "status"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Encrypted tactical communication between Operative A and Operative B",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "senderRole": {
+          "type": "string",
+          "enum": ["OPERATIVE_A", "OPERATIVE_B"]
+        },
+        "senderName": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "timestamp": {
+          "type": "number"
+        },
+        "isTacticalAlert": {
+          "type": "boolean"
+        }
+      },
+      "required": ["id", "senderRole", "senderName", "text", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/teams/{teamId}": {
+      "schema": "Team",
+      "description": "Squad documents storing operative profiles, scores, and status"
+    },
+    "/teams/{teamId}/messages/{messageId}": {
+      "schema": "ChatMessage",
+      "description": "Synchronized tactical chat messages within the squad"
+    }
+  }
+}

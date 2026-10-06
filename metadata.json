@@ -1,0 +1,6 @@
+{
+  "name": "SYSTEM OMEGA: The Omega Protocol",
+  "description": "Cinematic Tech Escape Room & CTF: 15 sectors, 105-minute synchronized timer, dual-operative mission control, and OMEGA CORE challenge.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
