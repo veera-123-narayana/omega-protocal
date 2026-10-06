@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { TeamState, LeaderboardEntry } from '../types';
 import { listenToAllTeams, formatReadableTimestamp } from '../services/firebaseService';
+import { getSolvedSectorsCount } from '../utils/validation';
 import { Trophy, X, Search, Medal, Crown, Sparkles, Clock, ShieldAlert } from 'lucide-react';
 
 interface LeaderboardModalProps {
@@ -34,8 +35,8 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({ teamState, o
         return scoreB - scoreA;
       }
 
-      const sectorsA = Array.isArray(a.completedSectors) ? a.completedSectors.length : 0;
-      const sectorsB = Array.isArray(b.completedSectors) ? b.completedSectors.length : 0;
+      const sectorsA = getSolvedSectorsCount(a.completedSectors);
+      const sectorsB = getSolvedSectorsCount(b.completedSectors);
       if (sectorsB !== sectorsA) {
         return sectorsB - sectorsA;
       }
@@ -53,7 +54,7 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({ teamState, o
       return createdA - createdB;
     })
     .map((team, idx) => {
-      const sectorsCount = Array.isArray(team.completedSectors) ? team.completedSectors.length : 0;
+      const sectorsCount = getSolvedSectorsCount(team.completedSectors);
       const isCurrentTeam = team.teamId === teamState.teamId;
       const rawLastSolved = typeof team.lastSolvedAt === 'number' ? team.lastSolvedAt : null;
 

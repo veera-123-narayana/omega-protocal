@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { SectorDefinition, TeamState, OperativeRole } from '../../types';
 import { teamManager } from '../../services/teamService';
 import { soundFx } from '../../utils/audio';
+import { isSectorSolved } from '../../utils/validation';
 import {
   DnsBlackoutChallenge,
   WhoIsTheOperativeChallenge,
@@ -55,7 +56,7 @@ export const SectorWorkspace: React.FC<SectorWorkspaceProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [hintsExpanded, setHintsExpanded] = useState(false);
 
-  const isCompleted = teamState.completedSectors.includes(sector.id);
+  const isCompleted = isSectorSolved(teamState.completedSectors, sector.id);
   const hintsUsedCount = teamState.hintsUsed[sector.id] || 0;
 
   const currentOperativeName =

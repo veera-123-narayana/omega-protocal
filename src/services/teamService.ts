@@ -6,7 +6,7 @@ import {
   ChatMessage,
 } from '../types';
 import { SECTORS } from '../data/sectors';
-import { validateSectorFlag } from '../utils/validation';
+import { validateSectorFlag, isSectorSolved, getSolvedSectorsCount } from '../utils/validation';
 import {
   createTeamInFirestore,
   authenticateJoinTeam,
@@ -24,6 +24,7 @@ import {
   syncChatMessageToFirebase,
   listenToTeamChat,
   CreateTeamPayload,
+  EventConfigPayload,
 } from './firebaseService';
 import { Unsubscribe } from 'firebase/firestore';
 
@@ -80,6 +81,7 @@ class TeamManager {
   private teamUnsubscribe: Unsubscribe | null = null;
   private chatUnsubscribe: Unsubscribe | null = null;
   private configUnsubscribe: Unsubscribe | null = null;
+  private eventConfig: EventConfigPayload | null = null;
 
   constructor() {
     this.state = this.loadState();
@@ -102,17 +104,25 @@ class TeamManager {
     // Attach global event config listener
     this.configUnsubscribe = listenToEventConfig((cfg) => {
       if (cfg && typeof cfg.durationMinutes === 'number') {
-        const delta = cfg.durationMinutes - this.state.missionDurationMinutes;
-        if (delta !== 0 || cfg.durationMinutes !== this.state.missionDurationMinutes) {
-          this.state.missionDurationMinutes = cfg.durationMinutes;
-          if (this.state.missionEndAt) {
-            this.state.missionEndAt += delta * 60 * 1000;
-          } else if (this.state.missionStartedAt) {
-            this.state.missionEndAt = this.state.missionStartedAt + cfg.durationMinutes * 60 * 1000;
-          }
-          this.saveToStorage(false);
-          this.notify();
+        this.eventConfig = cfg;
+        const prevDuration = this.state.missionDurationMinutes;
+        const delta = cfg.durationMinutes - prevDuration;
+        this.state.missionDurationMinutes = cfg.durationMinutes;
+
+        if (cfg.eventEndAt) {
+          this.state.missionEndAt = cfg.eventEndAt;
+        } else if (this.state.missionEndAt && delta !== 0) {
+          this.state.missionEndAt += delta * 60 * 1000;
+        } else if (this.state.missionStartedAt && delta !== 0) {
+          this.state.missionEndAt = this.state.missionStartedAt + cfg.durationMinutes * 60 * 1000;
         }
+
+        if (cfg.eventStartedAt && !this.state.missionStartedAt) {
+          this.state.missionStartedAt = cfg.eventStartedAt;
+        }
+
+        this.saveToStorage(false);
+        this.notify();
       }
     });
 
@@ -443,19 +453,26 @@ class TeamManager {
   /**
    * Calculates remaining time authoritative against Firebase timestamps
    * remainingTime = missionEndAt - currentTime
-   * Refreshing the browser or opening another device shows the same remaining time
+   * Both the Admin Panel and User Panel evaluate using the exact same authoritative Firebase clock
    */
   public getRemainingSeconds(): number {
+    const now = Date.now();
+    // 1. Authoritative end timestamp from global eventConfig (synced across all screens)
+    if (this.eventConfig?.eventEndAt) {
+      return Math.max(0, Math.floor((this.eventConfig.eventEndAt - now) / 1000));
+    }
+    // 2. Team-specific authoritative end timestamp from Firestore
     if (this.state.missionEndAt) {
-      const now = Date.now();
       return Math.max(0, Math.floor((this.state.missionEndAt - now) / 1000));
     }
+    // 3. Fallback calculation if startedAt is set
     if (this.state.missionStartedAt) {
-      const now = Date.now();
       const end = this.state.missionStartedAt + this.state.missionDurationMinutes * 60 * 1000;
       return Math.max(0, Math.floor((end - now) / 1000));
     }
-    return this.state.missionDurationMinutes * 60;
+    // 4. Default duration in minutes when waiting/standby
+    const durationMins = this.eventConfig?.durationMinutes || this.state.missionDurationMinutes || 105;
+    return durationMins * 60;
   }
 
   public setActiveSector(sectorId: string) {
@@ -496,8 +513,8 @@ class TeamManager {
     flag: string,
     operativeName: string
   ): Promise<{ success: boolean; message: string; xpDelta: number }> {
-    if (this.state.completedSectors.includes(sectorId)) {
-      return { success: false, message: 'SECTOR ALREADY COMPLETED BY OPERATIVE.', xpDelta: 0 };
+    if (isSectorSolved(this.state.completedSectors, sectorId)) {
+      return { success: false, message: 'SECTOR ALREADY COMPLETED BY SQUAD.', xpDelta: 0 };
     }
 
     const elapsedMin = this.state.missionStartedAt
@@ -523,17 +540,21 @@ class TeamManager {
 
     if (validation.isCorrect) {
       const solveTime = Date.now();
-      const updatedCompleted = [...this.state.completedSectors, sectorId];
+      const num = sectorId.replace(/^level-/, '');
+      const padded = num.padStart(2, '0');
+      const levelPadded = `level-${padded}`;
       const gained = baseXp + validation.xpDelta;
       const newScore = this.state.score + gained;
       const newSpeed = this.state.speedBonus + validation.speedBonusAwarded;
       const newFirstBlood = validation.firstBloodAwarded ? this.state.firstBloodBonus + 25 : this.state.firstBloodBonus;
 
+      const updatedCompleted = Array.from(new Set([...this.state.completedSectors, padded, levelPadded]));
+
       // Unlocked sectors calculation
       const updatedUnlocked = [...this.state.unlockedSectors];
       SECTORS.forEach((sec) => {
         if (!updatedUnlocked.includes(sec.id)) {
-          const allPrereqsMet = sec.prerequisites.every((req) => updatedCompleted.includes(req));
+          const allPrereqsMet = sec.prerequisites.every((req) => isSectorSolved(updatedCompleted, req));
           if (allPrereqsMet) {
             updatedUnlocked.push(sec.id);
           }
@@ -547,7 +568,7 @@ class TeamManager {
       this.state.firstBloodBonus = newFirstBlood;
       this.state.lastSolvedAt = solveTime;
 
-      if (sectorId === '15') {
+      if (padded === '15') {
         this.state.status = 'completed';
         this.state.completedAt = solveTime;
       }
@@ -556,16 +577,25 @@ class TeamManager {
       this.notify();
 
       if (this.state.teamId) {
-        await recordSolveInFirebase(
+        const firestoreRes = await recordSolveInFirebase(
           this.state.teamId,
           sectorId,
-          newScore,
+          baseXp,
+          validation.xpDelta,
           solveTime,
           updatedUnlocked,
           validation.speedBonusAwarded,
           validation.firstBloodAwarded ? 25 : 0,
           record
         );
+
+        if (firestoreRes.alreadySolved) {
+          return {
+            success: true,
+            message: 'SECTOR ALREADY SECURED BY YOUR SQUAD OPERATIVE.',
+            xpDelta: 0,
+          };
+        }
       }
 
       return { success: true, message: validation.message, xpDelta: gained };
@@ -581,8 +611,10 @@ class TeamManager {
         await updateTeamInFirebase(this.state.teamId, {
           score: newScore,
           penalties: newPenalties,
+          submissions: arrayUnion(record),
         });
       }
+
       return { success: false, message: validation.message, xpDelta: -10 };
     }
   }

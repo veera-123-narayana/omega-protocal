@@ -18,13 +18,18 @@ import {
   updateDoc,
   deleteDoc,
   collection,
+  query,
+  where,
   onSnapshot,
   serverTimestamp,
   arrayUnion,
+  increment,
+  runTransaction,
   Unsubscribe,
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { TeamState, ChatMessage, OperativeRole, SubmissionRecord } from '../types';
+import { isSectorSolved } from '../utils/validation';
 
 // Initialize Firebase App
 const app = initializeApp(firebaseConfig);
@@ -260,7 +265,12 @@ export function listenToAllTeams(callback: (teams: any[]) => void): Unsubscribe 
     (snapshot) => {
       const teams: any[] = [];
       snapshot.forEach((d) => {
-        teams.push(d.data());
+        const data = d.data();
+        teams.push({
+          ...data,
+          teamId: data.teamId || d.id,
+          docId: d.id,
+        });
       });
       callback(teams);
     },
@@ -271,23 +281,40 @@ export function listenToAllTeams(callback: (teams: any[]) => void): Unsubscribe 
   );
 }
 
+export interface EventConfigPayload {
+  durationMinutes: number;
+  eventStartedAt?: number | null;
+  eventEndAt?: number | null;
+  status?: string;
+  updatedAt?: any;
+  updatedBy?: string;
+}
+
 /**
- * Real-time listener for global event config (mission duration, etc.)
+ * Real-time listener for global event config (mission duration, authoritative clock)
  */
-export function listenToEventConfig(callback: (config: { durationMinutes: number; updatedAt?: any } | null) => void): Unsubscribe {
+export function listenToEventConfig(callback: (config: EventConfigPayload) => void): Unsubscribe {
   const configRef = doc(db, 'eventConfig', 'main');
   return onSnapshot(
     configRef,
     (snap) => {
       if (snap.exists()) {
-        callback(snap.data() as any);
+        const data = snap.data();
+        callback({
+          durationMinutes: typeof data.durationMinutes === 'number' ? data.durationMinutes : 105,
+          eventStartedAt: data.eventStartedAt ?? null,
+          eventEndAt: data.eventEndAt ?? null,
+          status: data.status || 'WAITING',
+          updatedAt: data.updatedAt,
+          updatedBy: data.updatedBy,
+        });
       } else {
-        callback({ durationMinutes: 105 });
+        callback({ durationMinutes: 105, eventStartedAt: null, eventEndAt: null });
       }
     },
     (err) => {
       console.warn('listenToEventConfig error:', err);
-      callback({ durationMinutes: 105 });
+      callback({ durationMinutes: 105, eventStartedAt: null, eventEndAt: null });
     }
   );
 }
@@ -302,10 +329,28 @@ export async function applyEventDurationChange(
 ): Promise<boolean> {
   try {
     const configRef = doc(db, 'eventConfig', 'main');
+    const configSnap = await getDoc(configRef);
+    const existingConfig = configSnap.exists() ? configSnap.data() : null;
+
+    let eventEndAt: number | null = null;
+    const eventStartedAt: number | null = existingConfig?.eventStartedAt ?? null;
+
+    if (existingConfig?.eventEndAt) {
+      if (deltaMinutes !== undefined) {
+        eventEndAt = existingConfig.eventEndAt + deltaMinutes * 60 * 1000;
+      } else {
+        eventEndAt = (existingConfig.eventStartedAt || Date.now()) + newDurationMinutes * 60 * 1000;
+      }
+    } else if (existingConfig?.eventStartedAt) {
+      eventEndAt = existingConfig.eventStartedAt + newDurationMinutes * 60 * 1000;
+    }
+
     await setDoc(
       configRef,
       {
         durationMinutes: newDurationMinutes,
+        eventStartedAt,
+        eventEndAt,
         updatedAt: serverTimestamp(),
         updatedBy: 'ADMIN',
       },
@@ -329,6 +374,8 @@ export async function applyEventDurationChange(
           newEndAt = data.missionStartedAt + newDurationMinutes * 60 * 1000;
         }
         payload.missionEndAt = newEndAt;
+      } else if (eventEndAt) {
+        payload.missionEndAt = eventEndAt;
       }
 
       await updateDoc(docSnap.ref, payload);
@@ -358,9 +405,30 @@ export async function startMissionInFirebase(teamId: string, durationMinutes: nu
     await updateDoc(teamRef, {
       missionStartedAt: now,
       missionEndAt: endAt,
+      missionDurationMinutes: durationMinutes,
       status: 'active',
       updatedAt: serverTimestamp(),
     });
+
+    // Also record in eventConfig/main so all devices and admin share the authoritative clock
+    try {
+      const configRef = doc(db, 'eventConfig', 'main');
+      const cfgSnap = await getDoc(configRef);
+      if (!cfgSnap.exists() || !cfgSnap.data().eventStartedAt) {
+        await setDoc(
+          configRef,
+          {
+            durationMinutes,
+            eventStartedAt: now,
+            eventEndAt: endAt,
+            status: 'active',
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
+    } catch (_) {}
+
     return true;
   } catch (e) {
     console.error('Failed to start mission timer:', e);
@@ -386,36 +454,98 @@ export async function updateTeamInFirebase(teamId: string, updates: Record<strin
 }
 
 /**
- * Records sector solve with updated score, completedSectors, and lastSolvedAt timestamp
+ * Records sector solve with updated score, completedSectors, and lastSolvedAt timestamp.
+ * Uses atomic Firestore transaction to guarantee:
+ * 1. Synchronized team-wide score and completed sectors across both operatives' screens.
+ * 2. Strict prevention of duplicate points if both operatives submit simultaneously.
  */
 export async function recordSolveInFirebase(
   teamId: string,
   sectorId: string,
-  newScore: number,
+  baseXp: number,
+  bonusXp: number,
   solveTimestamp: number,
   unlockedSectors: string[],
   speedBonusDelta: number,
   firstBloodBonusDelta: number,
   submission: SubmissionRecord
-): Promise<boolean> {
+): Promise<{ success: boolean; alreadySolved?: boolean; newScore?: number; completedSectors?: string[] }> {
   try {
     const teamRef = doc(db, 'teams', teamId);
-    const isCompletedOmega = sectorId === '15';
 
-    await updateDoc(teamRef, {
-      completedSectors: arrayUnion(sectorId),
-      unlockedSectors,
-      score: newScore,
-      lastSolvedAt: solveTimestamp,
-      status: isCompletedOmega ? 'completed' : 'active',
-      completedAt: isCompletedOmega ? solveTimestamp : null,
-      submissions: arrayUnion(submission),
-      updatedAt: serverTimestamp(),
+    const result = await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(teamRef);
+      if (!snap.exists()) {
+        throw new Error(`Squad ${teamId} not found in Firestore.`);
+      }
+
+      const data = snap.data();
+      const currentCompleted: string[] = Array.isArray(data.completedSectors) ? data.completedSectors : [];
+
+      // Check if already completed by any teammate
+      if (isSectorSolved(currentCompleted, sectorId)) {
+        return {
+          alreadySolved: true,
+          currentScore: data.score || 0,
+          completedSectors: currentCompleted,
+        };
+      }
+
+      const num = sectorId.replace(/^level-/, '');
+      const padded = num.padStart(2, '0');
+      const levelPadded = `level-${padded}`;
+      const totalGained = baseXp + bonusXp;
+      const newScore = (data.score || 0) + totalGained;
+      const updatedCompleted = Array.from(new Set([...currentCompleted, padded, levelPadded]));
+      const isCompletedOmega = padded === '15';
+
+      transaction.update(teamRef, {
+        completedSectors: updatedCompleted,
+        score: newScore,
+        unlockedSectors,
+        lastSolvedAt: solveTimestamp,
+        speedBonus: (data.speedBonus || 0) + speedBonusDelta,
+        firstBloodBonus: (data.firstBloodBonus || 0) + firstBloodBonusDelta,
+        status: isCompletedOmega ? 'completed' : (data.status === 'WAITING' ? 'active' : data.status || 'active'),
+        completedAt: isCompletedOmega ? solveTimestamp : data.completedAt || null,
+        submissions: arrayUnion(submission),
+        updatedAt: serverTimestamp(),
+      });
+
+      return {
+        alreadySolved: false,
+        newScore,
+        completedSectors: updatedCompleted,
+      };
     });
-    return true;
-  } catch (e) {
-    console.error('recordSolveInFirebase failed:', e);
-    return false;
+
+    return {
+      success: true,
+      alreadySolved: result.alreadySolved,
+      newScore: result.newScore,
+      completedSectors: result.completedSectors,
+    };
+  } catch (err: any) {
+    console.error('recordSolveInFirebase transaction failed, trying fallback:', err);
+    try {
+      const teamRef = doc(db, 'teams', teamId);
+      const num = sectorId.replace(/^level-/, '');
+      const padded = num.padStart(2, '0');
+      const levelPadded = `level-${padded}`;
+      const totalGained = baseXp + bonusXp;
+
+      await updateDoc(teamRef, {
+        completedSectors: arrayUnion(padded, levelPadded),
+        score: increment(totalGained),
+        lastSolvedAt: solveTimestamp,
+        submissions: arrayUnion(submission),
+        updatedAt: serverTimestamp(),
+      });
+      return { success: true, alreadySolved: false };
+    } catch (fallbackErr) {
+      console.error('recordSolveInFirebase fallback failed:', fallbackErr);
+      return { success: false, alreadySolved: false };
+    }
   }
 }
 
@@ -503,14 +633,38 @@ export async function resetAllTeamsInFirebase(): Promise<number> {
 
 /**
  * Admin: Completely remove a team from Firestore
+ * Ensures both direct ID deletion and matching teamId queries are purged
  */
 export async function deleteTeamFromFirebase(teamId: string): Promise<boolean> {
+  if (!teamId) return false;
   try {
+    // 1. Direct document delete
     const teamRef = doc(db, 'teams', teamId);
     await deleteDoc(teamRef);
+
+    // 2. Also search if document has matching teamId field or different ID casing
+    try {
+      const q = query(collection(db, 'teams'), where('teamId', '==', teamId));
+      const snap = await getDocs(q);
+      const deletes = snap.docs.map((d) => deleteDoc(d.ref));
+      await Promise.all(deletes);
+    } catch (_) {}
+
     return true;
   } catch (e) {
-    console.error('deleteTeamFromFirebase failed:', e);
+    console.error('deleteTeamFromFirebase failed, trying query search:', e);
+    try {
+      const q = query(collection(db, 'teams'), where('teamId', '==', teamId));
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        for (const d of snap.docs) {
+          await deleteDoc(d.ref);
+        }
+        return true;
+      }
+    } catch (err2) {
+      console.error('fallback delete failed:', err2);
+    }
     return false;
   }
 }

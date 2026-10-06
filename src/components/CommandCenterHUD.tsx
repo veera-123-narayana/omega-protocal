@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { TeamState, OperativeRole } from '../types';
 import { teamManager } from '../services/teamService';
 import { soundFx } from '../utils/audio';
+import { getSolvedSectorsCount } from '../utils/validation';
 import { Shield, Clock, Volume2, VolumeX, Trophy, Users, AlertTriangle, Terminal, Clapperboard } from 'lucide-react';
 
 interface CommandCenterHUDProps {
@@ -151,10 +152,10 @@ export const CommandCenterHUD: React.FC<CommandCenterHUDProps> = ({
           {/* Sectors Completed */}
           <div className="text-right pl-3 border-l border-slate-800">
             <div className="text-[9px] font-mono tracking-widest uppercase text-slate-400">
-              SECTORS
+              SECTORS SECURED
             </div>
             <div className="font-orbitron font-bold text-base sm:text-lg text-cyan-300 tracking-wider tabular-nums">
-              {teamState.completedSectors.length} <span className="text-xs text-slate-500 font-mono">/ 15</span>
+              {getSolvedSectorsCount(teamState.completedSectors)} <span className="text-xs text-slate-500 font-mono">/ 15</span>
             </div>
           </div>
 
@@ -192,7 +193,7 @@ export const CommandCenterHUD: React.FC<CommandCenterHUDProps> = ({
             <button
               onClick={onOpenAdmin}
               className="relative p-2 flex items-center justify-center cursor-pointer group"
-              title="Facility Telemetry (Admin Override)"
+              title="Facility Telemetry"
             >
               <span className="w-2.5 h-2.5 rounded-full bg-red-500 shadow-[0_0_12px_#ef4444] animate-pulse group-hover:scale-125 transition-transform" />
               <span className="absolute w-4 h-4 rounded-full border border-red-500/40 animate-ping pointer-events-none" />

@@ -304,3 +304,36 @@ export async function validateSectorFlag(
     firstBloodAwarded: isFirstBlood,
   };
 }
+
+/**
+ * Checks whether a sector is marked completed in a team's completedSectors list.
+ * Normalizes formats: "05", "level-05", "5", "level-5" to ensure cross-device consistency.
+ */
+export function isSectorSolved(completedSectors: string[] | undefined, sectorId: string): boolean {
+  if (!completedSectors || !Array.isArray(completedSectors) || completedSectors.length === 0) return false;
+  const num = sectorId.replace(/^level-/, '');
+  const padded = num.padStart(2, '0');
+  const levelPadded = `level-${padded}`;
+  const unpadded = String(parseInt(num, 10));
+  const levelUnpadded = `level-${unpadded}`;
+
+  return completedSectors.some(
+    (s) => s === sectorId || s === padded || s === levelPadded || s === unpadded || s === levelUnpadded
+  );
+}
+
+/**
+ * Returns the count of unique sectors (01-15) completed by the squad.
+ */
+export function getSolvedSectorsCount(completedSectors: string[] | undefined): number {
+  if (!completedSectors || !Array.isArray(completedSectors) || completedSectors.length === 0) return 0;
+  const unique = new Set<string>();
+  for (const s of completedSectors) {
+    const num = s.replace(/^level-/, '');
+    const parsed = parseInt(num, 10);
+    if (!isNaN(parsed) && parsed >= 1 && parsed <= 15) {
+      unique.add(parsed.toString().padStart(2, '0'));
+    }
+  }
+  return unique.size;
+}

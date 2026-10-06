@@ -3,6 +3,7 @@ import { SECTORS } from '../data/sectors';
 import { TeamState, SectorDefinition } from '../types';
 import { teamManager } from '../services/teamService';
 import { soundFx } from '../utils/audio';
+import { isSectorSolved } from '../utils/validation';
 import { Lock, CheckCircle2, Zap, Shield, ChevronRight } from 'lucide-react';
 
 interface SectorMapProps {
@@ -11,7 +12,7 @@ interface SectorMapProps {
 }
 
 export const SectorMap: React.FC<SectorMapProps> = ({ teamState, onSelectSector }) => {
-  const isSectorCompleted = (id: string) => teamState.completedSectors.includes(id);
+  const isSectorCompleted = (id: string) => isSectorSolved(teamState.completedSectors, id);
   // Allow team to access any level at any time
   const isSectorUnlocked = (_id: string) => true;
   const isSectorActive = (id: string) => teamState.activeSectorId === id;
